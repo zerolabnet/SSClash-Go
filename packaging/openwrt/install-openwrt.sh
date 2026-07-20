@@ -1,7 +1,7 @@
 #!/bin/sh
 # SSClash-Go installer for OpenWrt (procd).
 #
-# Prefer the bootstrap one-liner (same as SSClash):
+# Prefer the bootstrap one-liner:
 #   wget -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash
 #
 # Or save this script first (wget -q | sh is silent until download finishes):

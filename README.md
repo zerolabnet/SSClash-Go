@@ -185,7 +185,7 @@ Install Entware on USB first. Enable **Open packages**, **Ext file system**, **N
 wget -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash
 ```
 
-Default: TPROXY + Exclude mode, NAT masquerade on WAN, fake-ip whitelist sync enabled.
+Default: TPROXY + Exclude mode, NAT masquerade on WAN, **Auto fake-ip whitelist** enabled.
 DNS defaults to ndmc upstream (`127.0.0.1:7874`) in Settings — on some firmware
 ndmc may reject a non-standard port; if DNS interception fails, enable
 **Firewall redirect** in Settings instead (or configure DNS manually).
@@ -222,7 +222,7 @@ SSClash offers two interface processing modes:
 
 - Processes traffic **only** on selected interfaces — nothing else reaches Mihomo at the firewall level
 - Best when you want tight control over which LAN/VLAN or clients enter the proxy path
-- Often combined with fake-ip whitelist and `SRC-IP-CIDR` rules in `config.yaml`
+- Often combined with fake-ip whitelist and `SRC-IP-CIDR` rules in `config.yaml` (see Step 7)
 
 ### Exclude mode (simple default)
 
@@ -265,7 +265,12 @@ Edit `config.yaml` in the built-in ACE editor:
 Create and manage local rule files for `rule-providers`:
 
 - **Create custom rule lists** with validation
-- **Fake-ip whitelist** — editable IP-CIDR list for whitelist/rule mode
+- **Fake-IP whitelist** (`local-rules/fakeip-whitelist-ipcidr.txt`) — destination IPv4/CIDR list for `fake-ip-filter-mode: whitelist` or `rule`. With **Auto fake-ip whitelist** (Settings), the AUTO block is rebuilt on Start/apply from:
+  - inline `IP-CIDR` rules in `rules:` with a non-DIRECT action (e.g. `PROXY`, a proxy-group name)
+  - IP-CIDR entries in rule-providers referenced by non-DIRECT `RULE-SET` rules
+  - `dns.fake-ip-filter` entries (per filter mode)
+  - `SRC-IP-CIDR` is **not** copied into this file — it is handled separately by the firewall for per-client source matching
+- Use **Regenerate** on the Rule Lists tab after editing rules, or **Save & Reload** / **Start** while auto-sync is enabled
 - Organized file management with collapsible sections
 
 <p align="center">

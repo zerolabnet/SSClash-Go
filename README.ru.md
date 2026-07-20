@@ -184,7 +184,7 @@ curl -fsSL https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-
 wget -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash
 ```
 
-По умолчанию: TPROXY + Exclude, NAT masquerade на WAN, синхронизация fake-ip whitelist.
+По умолчанию: TPROXY + Exclude, NAT masquerade на WAN, включён **Auto fake-ip whitelist**.
 DNS по умолчанию через ndmc upstream (`127.0.0.1:7874`) в Настройках — на части
 прошивок ndmc может не принять нестандартный порт; если перехват DNS не работает,
 включите **Firewall redirect** в Настройках (или настройте DNS вручную).
@@ -221,7 +221,7 @@ SSClash предлагает два режима:
 
 - Обрабатывает трафик **только** на выбранных интерфейсах — остальное не попадает в Mihomo на уровне файрвола
 - Лучший выбор, когда нужен жёсткий контроль LAN/VLAN или клиентов
-- Часто используется вместе с fake-ip whitelist и правилами `SRC-IP-CIDR` в `config.yaml`
+- Часто используется вместе с fake-ip whitelist и правилами `SRC-IP-CIDR` в `config.yaml` (см. шаг 7)
 
 ### Режим исключения (простой вариант)
 
@@ -264,7 +264,12 @@ SSClash предлагает два режима:
 Создавайте и управляйте локальными файлами для `rule-providers`:
 
 - **Пользовательские списки правил** с проверкой
-- **Fake-ip whitelist** — редактируемый IP-CIDR список для режима whitelist/rule
+- **Fake-IP whitelist** (`local-rules/fakeip-whitelist-ipcidr.txt`) — список IPv4/CIDR назначения для `fake-ip-filter-mode: whitelist` или `rule`. При включённом **Auto fake-ip whitelist** (Настройки) блок AUTO пересобирается при Start/apply из:
+  - inline-правил `IP-CIDR` в `rules:` с action ≠ DIRECT (например `PROXY`, имя proxy-group)
+  - IP-CIDR из rule-providers, на которые ссылаются non-DIRECT `RULE-SET`
+  - записей `dns.fake-ip-filter` (по режиму фильтра)
+  - `SRC-IP-CIDR` **не** копируется в этот файл — файрвол обрабатывает его отдельно для фильтрации по источнику
+- После правки rules нажмите **Regenerate** на вкладке Rule Lists или **Save & Reload** / **Start**, если включена автосинхронизация
 - Организованное управление файлами со сворачиваемыми разделами
 
 <p align="center">
