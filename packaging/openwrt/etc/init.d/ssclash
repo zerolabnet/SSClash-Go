@@ -1,0 +1,57 @@
+#!/bin/sh /etc/rc.common
+# SSClash-Go — procd service for the single-binary daemon.
+
+USE_PROCD=1
+START=21
+STOP=79
+
+ROOT=/opt/clash
+PROG="$ROOT/bin/ssclash"
+PIDFILE=/var/run/ssclash.pid
+TLS_CERT="$ROOT/.ssclash/tls.crt"
+TLS_KEY="$ROOT/.ssclash/tls.key"
+
+start_service() {
+	procd_open_instance ssclash
+	procd_set_param command "$PROG" serve
+	procd_set_param env SSCLASH_ROOT="$ROOT"
+	# Listen address (default :9091 on all interfaces when unset). Examples:
+	#   :8443              — different port, all interfaces
+	#   192.168.1.1:9091   — LAN IP only (not WAN)
+	#   127.0.0.1:9091     — localhost only
+	# procd_set_param env SSCLASH_ADDR=":9091"
+	# HTTPS web UI — uncomment after placing cert/key (see install script / README):
+	# procd_set_param env SSCLASH_TLS_CERT="$TLS_CERT"
+	# procd_set_param env SSCLASH_TLS_KEY="$TLS_KEY"
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param pidfile "$PIDFILE"
+	procd_close_instance
+}
+
+_wait_ssclash() {
+	[ -f "$PIDFILE" ] || return 0
+	pid=$(cat "$PIDFILE" 2>/dev/null) || return 0
+	[ -n "$pid" ] || return 0
+	i=0
+	while [ "$i" -lt 10 ]; do
+		kill -0 "$pid" 2>/dev/null || return 0
+		i=$((i + 1))
+		sleep 1
+	done
+}
+
+stop() {
+	procd_kill "${basescript:-$initscript}" "$1"
+	_wait_ssclash
+	"$PROG" cleanup 2>/dev/null || true
+}
+
+reload_service() {
+	restart
+}
+
+service_triggers() {
+	procd_add_reload_trigger "network"
+}

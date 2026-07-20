@@ -1,0 +1,26 @@
+[Unit]
+Description=SSClash-Go proxy manager (Mihomo)
+Documentation=https://github.com/zerolabnet/SSClash-Go
+After=network-online.target nss-lookup.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/clash/bin/ssclash serve
+Environment=SSCLASH_ROOT=/opt/clash
+# Listen address (default :9091 on all interfaces when unset). Examples:
+#   :8443                          — different port, all interfaces
+#   192.168.1.1:9091               — LAN IP only (not WAN)
+#   127.0.0.1:9091                 — localhost only
+# Environment=SSCLASH_ADDR=:9091
+# HTTPS web UI — uncomment after placing cert/key under /opt/clash/.ssclash/:
+# Environment=SSCLASH_TLS_CERT=/opt/clash/.ssclash/tls.crt
+# Environment=SSCLASH_TLS_KEY=/opt/clash/.ssclash/tls.key
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=1048576
+ExecStopPost=-/opt/clash/bin/ssclash cleanup
+
+[Install]
+WantedBy=multi-user.target

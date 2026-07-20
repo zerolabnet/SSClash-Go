@@ -1,0 +1,79 @@
+SSClash Binary Software License Agreement
+
+Copyright (c) 2026 ZeroChaos. All rights reserved.
+
+This license applies to the compiled SSClash software ("Software") distributed
+through official release assets published by the copyright holder at:
+
+  https://github.com/zerolabnet/SSClash-Go/releases
+
+Source code is not published as part of this distribution. Development takes
+place in a separate private repository and is not covered by any open-source
+grant.
+
+1. Grant of license
+
+Subject to the terms below, you are granted a non-exclusive, non-transferable,
+revocable license to download, install, and run the Software on devices and
+systems that you own or administer, for personal or internal commercial use.
+
+2. Restrictions
+
+You may not, and may not permit others to:
+
+  (a) redistribute, sublicense, sell, rent, lease, or otherwise make the
+      Software available to third parties, except by linking to the official
+      release URLs above;
+
+  (b) modify, adapt, translate, or create derivative works based on the
+      Software;
+
+  (c) reverse engineer, decompile, disassemble, or attempt to derive the
+      source code of the Software, except to the extent such activity is
+      expressly permitted by applicable law notwithstanding this limitation;
+
+  (d) remove, alter, or obscure copyright, trademark, or license notices;
+
+  (e) use the Software in violation of applicable law or third-party rights.
+
+3. Third-party components
+
+The Software may install, invoke, or interoperate with separate third-party
+programs (including the Mihomo core) that are not part of this license and
+are subject to their own licenses. You are responsible for complying with
+those licenses.
+
+4. Updates and support
+
+The copyright holder may release updates, change features, or discontinue
+distribution at any time. Unless stated in a specific release note, the
+Software is provided without maintenance, support, or uptime guarantees.
+
+5. Disclaimer of warranties
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. THE ENTIRE RISK AS TO
+THE QUALITY AND PERFORMANCE OF THE SOFTWARE IS WITH YOU.
+
+6. Limitation of liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL THE
+COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+LOSS OF DATA, NETWORK OUTAGE, LOSS OF PROFITS, OR BUSINESS INTERRUPTION)
+ARISING OUT OF THE USE OR INABILITY TO USE THE SOFTWARE, EVEN IF ADVISED OF
+THE POSSIBILITY OF SUCH DAMAGES.
+
+7. Termination
+
+This license terminates automatically if you breach any term. Upon termination,
+you must stop using the Software and delete all copies in your possession.
+
+8. General
+
+This agreement constitutes the entire license for distributed binaries. If any
+provision is held unenforceable, the remaining provisions remain in effect.
+No waiver of any term is a continuing waiver.
+
+For licensing inquiries: https://zerolab.net

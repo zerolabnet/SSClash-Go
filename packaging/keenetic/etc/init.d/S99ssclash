@@ -1,0 +1,61 @@
+#!/bin/sh
+# SSClash-Go — Entware init script for Keenetic (generic Linux gateway path).
+# Install to /opt/etc/init.d/S99ssclash
+
+PATH=/opt/sbin:/opt/bin:/sbin:/bin:/usr/sbin:/usr/bin
+ROOT=/opt/clash
+PROG="$ROOT/bin/ssclash"
+PIDFILE=/opt/var/run/ssclash.pid
+TLS_CERT="$ROOT/.ssclash/tls.crt"
+TLS_KEY="$ROOT/.ssclash/tls.key"
+
+export SSCLASH_ROOT="$ROOT"
+# Listen address (default :9091 on all interfaces when unset). Examples:
+#   :8443              — different port, all interfaces
+#   192.168.1.1:9091   — LAN IP only (not WAN)
+#   127.0.0.1:9091     — localhost only
+# export SSCLASH_ADDR=":9091"
+# HTTPS web UI — uncomment after placing cert/key (see install script / README):
+# export SSCLASH_TLS_CERT="$TLS_CERT"
+# export SSCLASH_TLS_KEY="$TLS_KEY"
+
+start() {
+	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+		echo "ssclash already running (pid $(cat "$PIDFILE"))"
+		return 0
+	fi
+	mkdir -p "$(dirname "$PIDFILE")"
+	echo "Starting ssclash..."
+	"$PROG" serve &
+	echo $! > "$PIDFILE"
+}
+
+stop() {
+	echo "Stopping ssclash..."
+	if [ -f "$PIDFILE" ]; then
+		pid="$(cat "$PIDFILE")"
+		kill -TERM "$pid" 2>/dev/null || true
+		i=0
+		while [ "$i" -lt 10 ]; do
+			kill -0 "$pid" 2>/dev/null || break
+			i=$((i + 1))
+			sleep 1
+		done
+		kill -KILL "$pid" 2>/dev/null || true
+		rm -f "$PIDFILE"
+	fi
+	"$PROG" cleanup 2>/dev/null || true
+}
+
+restart() {
+	stop
+	sleep 2
+	start
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart) restart ;;
+	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
