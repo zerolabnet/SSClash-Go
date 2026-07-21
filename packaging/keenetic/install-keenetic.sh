@@ -141,7 +141,7 @@ stop_ssclash_for_upgrade() {
 
 	say "stopping ssclash for safe upgrade / GitHub downloads..."
 	if [ -x "$INIT_DEST" ]; then
-		"$INIT_DEST" stop || true
+		"$INIT_DEST" stop 2>/dev/null || true
 	fi
 	_i=0
 	while pidof ssclash >/dev/null 2>&1 && [ "$_i" -lt 20 ]; do
@@ -165,22 +165,29 @@ github_get_once() {
 	_max="${GITHUB_GET_MAX_TIME:-${GITHUB_CURL_MAX_TIME:-120}}"
 	if command -v curl >/dev/null 2>&1; then
 		if [ -n "$_out" ]; then
-			curl -fsSL --retry 2 --connect-timeout 15 --max-time "$_max" -o "$_out" "$_url" \
-				&& [ -s "$_out" ]
+			curl -fsSL --retry 2 --connect-timeout 15 --max-time "$_max" -o "$_out" "$_url" 2>/dev/null \
+				&& [ -s "$_out" ] && return 0
 		else
-			curl -fsSL --retry 2 --connect-timeout 15 --max-time "$_max" "$_url"
+			curl -fsSL --retry 2 --connect-timeout 15 --max-time "$_max" "$_url" 2>/dev/null \
+				&& return 0
 		fi
-		return $?
 	fi
 	if command -v wget >/dev/null 2>&1; then
 		if [ -n "$_out" ]; then
-			wget -T "$_max" -t 3 -qO "$_out" "$_url" && [ -s "$_out" ]
+			wget -T "$_max" -t 3 -qO "$_out" "$_url" 2>/dev/null \
+				&& [ -s "$_out" ] && return 0
 		else
-			wget -T "$_max" -t 3 -qO- "$_url"
+			wget -T "$_max" -t 3 -qO- "$_url" 2>/dev/null \
+				&& return 0
 		fi
-		return $?
 	fi
 	return 1
+}
+
+github_fail_hint() {
+	warn "Could not reach GitHub (DNS/network)."
+	warn "Downloads run while SSClash is still up — if it routes your traffic, do not stop it manually first."
+	warn "Check: nslookup api.github.com   or   wget -qO- https://api.github.com/zen"
 }
 
 github_get() {
@@ -196,8 +203,11 @@ github_get() {
 	else
 		warn "GitHub request failed — retrying once..."
 	fi
-	github_get_once "$_url" "$_out"
-	return $?
+	if github_get_once "$_url" "$_out"; then
+		return 0
+	fi
+	github_fail_hint
+	return 1
 }
 
 while [ $# -gt 0 ]; do
@@ -611,7 +621,6 @@ say "SSClash-Go installer (Keenetic / Entware)"
 ensure_fetcher
 check_netfilter_modules
 detect_arch
-stop_ssclash_for_upgrade
 fetch_ssclash_release
 install_ssclash
 write_settings

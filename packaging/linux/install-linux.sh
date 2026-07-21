@@ -159,22 +159,29 @@ github_get_once() {
 	_max="${GITHUB_GET_MAX_TIME:-${GITHUB_CURL_MAX_TIME:-120}}"
 	if command -v curl >/dev/null 2>&1; then
 		if [ -n "$_out" ]; then
-			curl -fsSL --retry 2 --connect-timeout 15 --max-time "$_max" -o "$_out" "$_url" \
-				&& [ -s "$_out" ]
+			curl -fsSL --retry 2 --connect-timeout 15 --max-time "$_max" -o "$_out" "$_url" 2>/dev/null \
+				&& [ -s "$_out" ] && return 0
 		else
-			curl -fsSL --retry 2 --connect-timeout 15 --max-time "$_max" "$_url"
+			curl -fsSL --retry 2 --connect-timeout 15 --max-time "$_max" "$_url" 2>/dev/null \
+				&& return 0
 		fi
-		return $?
 	fi
 	if command -v wget >/dev/null 2>&1; then
 		if [ -n "$_out" ]; then
-			wget -T "$_max" -t 3 -qO "$_out" "$_url" && [ -s "$_out" ]
+			wget -T "$_max" -t 3 -qO "$_out" "$_url" 2>/dev/null \
+				&& [ -s "$_out" ] && return 0
 		else
-			wget -T "$_max" -t 3 -qO- "$_url"
+			wget -T "$_max" -t 3 -qO- "$_url" 2>/dev/null \
+				&& return 0
 		fi
-		return $?
 	fi
 	return 1
+}
+
+github_fail_hint() {
+	warn "Could not reach GitHub (DNS/network)."
+	warn "Downloads run while SSClash is still up — if it routes your traffic, do not stop it manually first."
+	warn "Check: getent hosts api.github.com  or  curl -fsSL https://api.github.com/zen"
 }
 
 github_get() {
@@ -190,8 +197,11 @@ github_get() {
 	else
 		warn "GitHub request failed — retrying once..."
 	fi
-	github_get_once "$_url" "$_out"
-	return $?
+	if github_get_once "$_url" "$_out"; then
+		return 0
+	fi
+	github_fail_hint
+	return 1
 }
 
 ensure_fetcher() {
@@ -461,9 +471,6 @@ install_mihomo() {
 TMP_BIN=""
 cleanup() { [ -n "$TMP_BIN" ] && rm -f "$TMP_BIN"; }
 trap cleanup EXIT INT TERM
-
-# Stop early so binary replace and GitHub downloads are reliable.
-stop_ssclash_for_upgrade
 
 if [ -n "$FROM" ]; then
 	[ -f "$FROM" ] || err "Binary not found: $FROM"

@@ -57,11 +57,11 @@ stop_ssclash_if_running() {
 	_stopped=0
 	if [ -x /etc/init.d/ssclash ]; then
 		warn "stopping /etc/init.d/ssclash for reliable download / upgrade..."
-		/etc/init.d/ssclash stop || true
+		/etc/init.d/ssclash stop 2>/dev/null || true
 		_stopped=1
 	elif [ -x /opt/etc/init.d/S99ssclash ]; then
 		warn "stopping /opt/etc/init.d/S99ssclash for reliable download / upgrade..."
-		/opt/etc/init.d/S99ssclash stop || true
+		/opt/etc/init.d/S99ssclash stop 2>/dev/null || true
 		_stopped=1
 	elif command -v systemctl >/dev/null 2>&1; then
 		warn "stopping ssclash.service for reliable download / upgrade..."
@@ -90,13 +90,23 @@ stop_ssclash_if_running() {
 fetch_url_once() {
 	_url="$1"
 	_out="$2"
-	if command -v wget >/dev/null 2>&1; then
-		wget -T 60 -t 3 -qO "$_out" "$_url" 2>/dev/null && [ -s "$_out" ]
-	elif command -v curl >/dev/null 2>&1; then
-		curl -fsSL --retry 3 --connect-timeout 15 --max-time 120 -o "$_out" "$_url" 2>/dev/null && [ -s "$_out" ]
-	else
+	_max="${SSCLASH_FETCH_MAX_TIME:-120}"
+	if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
 		die "wget or curl required"
 	fi
+	if command -v curl >/dev/null 2>&1; then
+		if curl -fsSL --retry 2 --connect-timeout 15 --max-time "$_max" -o "$_out" "$_url" 2>/dev/null \
+			&& [ -s "$_out" ]; then
+			return 0
+		fi
+	fi
+	if command -v wget >/dev/null 2>&1; then
+		if wget -T "$_max" -t 3 -qO "$_out" "$_url" 2>/dev/null \
+			&& [ -s "$_out" ]; then
+			return 0
+		fi
+	fi
+	return 1
 }
 
 fetch_url() {
@@ -119,7 +129,7 @@ fetch_installer() {
 	if fetch_url "$_url" "$_out"; then
 		return 0
 	fi
-	die "download failed: ${_url}"
+	die "download failed: ${_url} (check DNS/HTTPS: nslookup github.com; install ca-bundle if needed)"
 }
 
 verify_installer() {
@@ -139,11 +149,6 @@ case "$platform" in
 esac
 
 say "platform: ${platform}"
-
-# Stop early on upgrades so the platform script download is not blocked by TPROXY.
-if ssclash_is_running || pidof clash >/dev/null 2>&1; then
-	stop_ssclash_if_running
-fi
 
 TMP="$(mktemp)"
 cleanup() { rm -f "$TMP"; }
