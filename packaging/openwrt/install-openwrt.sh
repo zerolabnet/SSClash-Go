@@ -17,7 +17,6 @@
 #   --tls-key <path>     TLS private key (PEM); requires --tls-cert
 #   --tls-self-signed    Generate $ROOT/.ssclash/tls.{crt,key} (needs openssl)
 #   --no-mihomo          Skip Mihomo kernel download (install later from Settings).
-#   --keep-running       Do not stop ssclash on GitHub retry (upgrade without downtime).
 #   -h, --help           Show this help
 set -e
 
@@ -39,6 +38,7 @@ SSCLASH_BIN_URL=""
 SSCLASH_SVC_URL=""
 SSCLASH_ASSET=""
 MIHOMO_ARCH=""
+MIHOMO_STATUS="skipped"
 
 UI_PORT=9091
 UI_BIND=""
@@ -47,14 +47,13 @@ TLS_CERT=""
 TLS_KEY=""
 TLS_SELF_SIGNED=0
 SKIP_MIHOMO=0
-KEEP_RUNNING=0
 
 say()  { echo "[ssclash] $*"; }
 info() { echo "[ssclash]   $*"; }
 warn() { echo "[ssclash] ! $*"; }
 die()  { echo "[ssclash] ERROR: $*" >&2; exit 1; }
 
-# Copy a file into place with mode (BusyBox/OpenWrt has no coreutils install(1)).
+# Copy a non-executable file into place (init scripts, etc.).
 install_file() {
 	_src="$1"
 	_dst="$2"
@@ -64,23 +63,142 @@ install_file() {
 	chmod "$_mode" "$_dst"
 }
 
-# GitHub/raw downloads: bypass proxy env; retry once after stopping ssclash on failure.
-github_curl() {
-	if curl -fsSL --retry 2 --connect-timeout 15 --max-time 120 \
-		"$@"; then
-		return 0
-	fi
-	if [ "$KEEP_RUNNING" = "1" ] || [ "${SSCLASH_INSTALL_KEEP_RUNNING:-0}" = "1" ]; then
+# Reject HTML/error pages mistaken for release binaries.
+verify_downloaded_bin() {
+	_f="$1"
+	_label="${2:-binary}"
+	[ -s "$_f" ] || { warn "$_label is empty"; return 1; }
+	_sz=$(wc -c < "$_f" | tr -d ' ')
+	if [ "${_sz:-0}" -lt 1000000 ]; then
+		warn "$_label looks too small (${_sz} bytes) — not a release binary"
 		return 1
 	fi
-	if pidof ssclash >/dev/null 2>&1; then
-		warn "GitHub request failed — stopping ssclash and retrying once..."
+	if head -c 256 "$_f" | grep -qiE '<!DOCTYPE|<html|Not Found|rate limit|Error'; then
+		warn "$_label looks like an HTML/error page, not a binary"
+		return 1
+	fi
+	# ELF magic 0x7f 'E' 'L' 'F'
+	_hdr=$(head -c 4 "$_f" 2>/dev/null || true)
+	case "$_hdr" in
+		$'\x7fELF') return 0 ;;
+	esac
+	# Some BusyBox head/case combos fail on NUL — also accept via od.
+	_hex=$(od -An -tx1 -N4 "$_f" 2>/dev/null | tr -d ' \n')
+	case "$_hex" in
+		7f454c46) return 0 ;;
+	esac
+	warn "$_label is not an ELF binary"
+	return 1
+}
+
+# Stop processes whose /proc/*/exe resolves to this path (avoids random "clash" names).
+stop_bin_path() {
+	_bin="$1"
+	[ -n "$_bin" ] || return 0
+	if command -v fuser >/dev/null 2>&1; then
+		fuser -k "$_bin" >/dev/null 2>&1 || true
+	fi
+	for _p in /proc/[0-9]*; do
+		[ -L "$_p/exe" ] || continue
+		_exe=$(readlink "$_p/exe" 2>/dev/null || true)
+		case "$_exe" in
+			"$_bin"|"$_bin"*) kill -TERM "${_p#/proc/}" 2>/dev/null || true ;;
+		esac
+	done
+}
+
+# Replace an executable safely: write temp next to dest, verify, then mv.
+install_bin() {
+	_src="$1"
+	_dst="$2"
+	_mode="${3:-755}"
+	_label="${4:-binary}"
+	verify_downloaded_bin "$_src" "$_label" || return 1
+	mkdir -p "$(dirname "$_dst")"
+	stop_ssclash_for_upgrade
+	stop_bin_path "$_dst"
+	_tmp="$(dirname "$_dst")/.ssclash-install.$$"
+	rm -f "$_tmp"
+	cp -f "$_src" "$_tmp"
+	chmod "$_mode" "$_tmp"
+	mv -f "$_tmp" "$_dst"
+	chmod "$_mode" "$_dst"
+	return 0
+}
+
+# Stop ssclash + leftover Mihomo so GitHub works and binaries can be replaced.
+stop_ssclash_for_upgrade() {
+	_running=0
+	pidof ssclash >/dev/null 2>&1 && _running=1
+	pidof clash >/dev/null 2>&1 && _running=1
+	for _p in /proc/[0-9]*; do
+		[ -L "$_p/exe" ] || continue
+		_exe=$(readlink "$_p/exe" 2>/dev/null || true)
+		case "$_exe" in
+			"$SSCLASH_BIN"|"$SSCLASH_BIN"*|"$CLASH_BIN"|"$CLASH_BIN"*) _running=1; break ;;
+		esac
+	done
+	[ "$_running" = "1" ] || return 0
+
+	say "stopping ssclash for safe upgrade / GitHub downloads..."
+	if [ -x /etc/init.d/ssclash ]; then
 		/etc/init.d/ssclash stop || true
-		curl -fsSL --retry 2 --connect-timeout 15 --max-time 120 \
-			"$@"
+	fi
+	_i=0
+	while pidof ssclash >/dev/null 2>&1 && [ "$_i" -lt 20 ]; do
+		sleep 1
+		_i=$((_i + 1))
+	done
+	stop_bin_path "$SSCLASH_BIN"
+	stop_bin_path "$CLASH_BIN"
+	if pidof clash >/dev/null 2>&1; then
+		warn "stopping leftover Mihomo process..."
+		kill $(pidof clash) 2>/dev/null || true
+		sleep 1
+		kill -9 $(pidof clash) 2>/dev/null || true
+	fi
+}
+
+# Fetch from GitHub. Usage: github_get <url> [outfile]
+# Without outfile, body goes to stdout. Prefers curl, falls back to wget.
+github_get_once() {
+	_url="$1"
+	_out="${2:-}"
+	_max="${GITHUB_GET_MAX_TIME:-${GITHUB_CURL_MAX_TIME:-120}}"
+	if command -v curl >/dev/null 2>&1; then
+		if [ -n "$_out" ]; then
+			curl -fsSL --retry 2 --connect-timeout 15 --max-time "$_max" -o "$_out" "$_url" \
+				&& [ -s "$_out" ]
+		else
+			curl -fsSL --retry 2 --connect-timeout 15 --max-time "$_max" "$_url"
+		fi
+		return $?
+	fi
+	if command -v wget >/dev/null 2>&1; then
+		if [ -n "$_out" ]; then
+			wget -T "$_max" -t 3 -qO "$_out" "$_url" && [ -s "$_out" ]
+		else
+			wget -T "$_max" -t 3 -qO- "$_url"
+		fi
 		return $?
 	fi
 	return 1
+}
+
+github_get() {
+	_url="$1"
+	_out="${2:-}"
+	if github_get_once "$_url" "$_out"; then
+		return 0
+	fi
+	if pidof ssclash >/dev/null 2>&1 || pidof clash >/dev/null 2>&1; then
+		warn "GitHub request failed — stopping ssclash and retrying once..."
+		stop_ssclash_for_upgrade
+	else
+		warn "GitHub request failed — retrying once..."
+	fi
+	github_get_once "$_url" "$_out"
+	return $?
 }
 
 parse_install_options() {
@@ -98,9 +216,8 @@ parse_install_options() {
 			--tls-key=*) TLS_KEY="${1#*=}"; shift ;;
 			--tls-self-signed) TLS_SELF_SIGNED=1; shift ;;
 			--no-mihomo) SKIP_MIHOMO=1; shift ;;
-			--keep-running) KEEP_RUNNING=1; shift ;;
 			-h|--help)
-				sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
+				sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
 				exit 0 ;;
 			*) die "Unknown option: $1 (try --help)" ;;
 		esac
@@ -205,12 +322,12 @@ configure_openwrt_init() {
 	fi
 }
 
-# ---- 0. curl (needed for GitHub API + downloads) ----------------------------
-ensure_curl() {
-	if command -v curl >/dev/null 2>&1; then
+# ---- 0. curl or wget (needed for GitHub API + downloads) --------------------
+ensure_fetcher() {
+	if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
 		return 0
 	fi
-	warn "curl not found — installing..."
+	warn "neither curl nor wget found — installing curl..."
 	if [ "$PKG_MGR" = "apk" ]; then
 		apk update || die "apk update failed"
 		apk add curl || die "failed to install curl"
@@ -348,7 +465,7 @@ install_deps() {
 # ---- 5. Latest ssclash-go release (GitHub API) ------------------------------
 fetch_ssclash_release() {
 	say "fetching latest ssclash-go release..."
-	RELEASE_JSON=$(github_curl "$SSCLASH_API") || die "GitHub API request failed (try: /etc/init.d/ssclash stop, then re-run)"
+	RELEASE_JSON=$(github_get "$SSCLASH_API") || die "GitHub API request failed (try: /etc/init.d/ssclash stop, then re-run)"
 	[ -n "$RELEASE_JSON" ] || die "empty GitHub API response"
 
 	SSCLASH_TAG=$(printf '%s' "$RELEASE_JSON" \
@@ -374,11 +491,18 @@ fetch_ssclash_release() {
 install_ssclash() {
 	say "downloading ssclash..."
 	TMP="$(mktemp)"
-	curl -fSL --retry 2 --connect-timeout 15 --max-time 300 \
-		"$SSCLASH_BIN_URL" -o "$TMP" || die "ssclash download failed"
-	mkdir -p "$ROOT/bin"
-	install_file "$TMP" "$SSCLASH_BIN" 755
+	if ! GITHUB_GET_MAX_TIME=300 github_get "$SSCLASH_BIN_URL" "$TMP"; then
+		rm -f "$TMP"
+		die "ssclash download failed"
+	fi
+	if ! install_bin "$TMP" "$SSCLASH_BIN" 755 "ssclash"; then
+		rm -f "$TMP"
+		die "ssclash install failed (bad download?)"
+	fi
 	rm -f "$TMP"
+	if ! "$SSCLASH_BIN" version >/dev/null 2>&1 && ! "$SSCLASH_BIN" -h >/dev/null 2>&1; then
+		warn "ssclash installed but did not respond to version/-h (check arch)"
+	fi
 	say "installed ${SSCLASH_BIN}"
 }
 
@@ -394,7 +518,7 @@ install_service() {
 
 	if [ -n "$SSCLASH_SVC_URL" ]; then
 		say "installing init.d service from release..."
-		github_curl "$SSCLASH_SVC_URL" -o /tmp/ssclash-svc.tgz \
+		GITHUB_GET_MAX_TIME=300 github_get "$SSCLASH_SVC_URL" /tmp/ssclash-svc.tgz \
 			&& tar -xzf /tmp/ssclash-svc.tgz -C / \
 			&& rm -f /tmp/ssclash-svc.tgz \
 			|| warn "could not install service bundle"
@@ -431,23 +555,29 @@ mihomo_asset_url() {
 }
 
 # ---- 8. mihomo kernel (GitHub API) ------------------------------------------
+# Extract to a temp file, verify, then atomically replace. Never truncate or
+# delete an existing working kernel on failure.
 install_mihomo() {
 	if [ "$SKIP_MIHOMO" = "1" ]; then
 		warn "skipping Mihomo download (--no-mihomo)"
+		MIHOMO_STATUS="skipped (--no-mihomo)"
 		return 0
 	fi
 	if [ -z "$MIHOMO_ARCH" ]; then
 		warn "Mihomo architecture not determined — install manually from Settings"
+		MIHOMO_STATUS="missing (unknown arch)"
 		return 0
 	fi
 
 	say "fetching latest Mihomo release..."
-	MIHOMO_JSON=$(github_curl "$MIHOMO_API") || {
+	MIHOMO_JSON=$(github_get "$MIHOMO_API") || {
 		warn "Mihomo GitHub API request failed — install from Settings later"
+		MIHOMO_STATUS="missing (API failed)"
 		return 0
 	}
 	[ -n "$MIHOMO_JSON" ] || {
 		warn "empty Mihomo API response — install from Settings later"
+		MIHOMO_STATUS="missing (empty API)"
 		return 0
 	}
 
@@ -456,35 +586,53 @@ install_mihomo() {
 		| sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
 	if [ -z "$MIHOMO_VER" ]; then
 		warn "could not parse Mihomo version — install from Settings later"
+		MIHOMO_STATUS="missing (parse failed)"
 		return 0
 	fi
 	info "Mihomo: ${MIHOMO_VER}"
 
 	MIHOMO_URL=$(mihomo_asset_url "$MIHOMO_VER" "$MIHOMO_ARCH") || {
 		warn "Mihomo asset for ${MIHOMO_ARCH} not found — install from Settings later"
+		MIHOMO_STATUS="missing (no asset for ${MIHOMO_ARCH})"
 		return 0
 	}
 	info "url: ${MIHOMO_URL}"
 
+	_tmp_gz="$(mktemp)"
+	_tmp_bin="$(mktemp)"
 	say "downloading Mihomo kernel..."
-	if ! curl -fSL --retry 2 --connect-timeout 15 --max-time 300 \
-		"$MIHOMO_URL" -o /tmp/clash.gz; then
+	if ! GITHUB_GET_MAX_TIME=300 github_get "$MIHOMO_URL" "$_tmp_gz"; then
 		warn "Mihomo download failed — install from Settings later"
-		rm -f /tmp/clash.gz
+		rm -f "$_tmp_gz" "$_tmp_bin"
+		MIHOMO_STATUS="missing (download failed)"
 		return 0
 	fi
 
-	mkdir -p "$(dirname "$CLASH_BIN")"
-	if ! gunzip -c /tmp/clash.gz > "$CLASH_BIN"; then
-		warn "Mihomo extraction failed — install from Settings later"
-		rm -f /tmp/clash.gz "$CLASH_BIN"
+	if ! gunzip -c "$_tmp_gz" > "$_tmp_bin"; then
+		warn "Mihomo extraction failed — keeping existing kernel; install from Settings later"
+		rm -f "$_tmp_gz" "$_tmp_bin"
+		MIHOMO_STATUS="missing (extract failed)"
 		return 0
 	fi
+	rm -f "$_tmp_gz"
+	chmod +x "$_tmp_bin"
+
+	if ! verify_downloaded_bin "$_tmp_bin" "Mihomo" || ! "$_tmp_bin" -v >/dev/null 2>&1; then
+		warn "downloaded Mihomo binary does not run on this host — keeping existing kernel"
+		rm -f "$_tmp_bin"
+		MIHOMO_STATUS="missing (bad/wrong-arch binary)"
+		return 0
+	fi
+
+	stop_ssclash_for_upgrade
+	mkdir -p "$(dirname "$CLASH_BIN")"
+	mv -f "$_tmp_bin" "$CLASH_BIN"
 	chmod +x "$CLASH_BIN"
-	rm -f /tmp/clash.gz /opt/clash/bin/meta-backup 2>/dev/null || true
+	rm -f /opt/clash/bin/meta-backup 2>/dev/null || true
 
 	MIHOMO_V=$("$CLASH_BIN" -v 2>/dev/null || true)
 	say "Mihomo installed: ${MIHOMO_V:-ok}"
+	MIHOMO_STATUS="installed (${MIHOMO_V:-$MIHOMO_VER})"
 }
 
 # ---- MAIN -------------------------------------------------------------------
@@ -497,17 +645,21 @@ prepare_tls_certs
 
 say "SSClash-Go installer"
 detect_openwrt
-ensure_curl
+ensure_fetcher
 detect_arch
-fetch_ssclash_release
-pkg_update
-install_deps
 
 SSCLASH_WAS_ENABLED=0
 if [ -x /etc/init.d/ssclash ] && /etc/init.d/ssclash enabled 2>/dev/null; then
 	SSCLASH_WAS_ENABLED=1
 	info "service was enabled — will restore after upgrade"
 fi
+
+# Stop before GitHub downloads / binary replace.
+stop_ssclash_for_upgrade
+
+fetch_ssclash_release
+pkg_update
+install_deps
 
 install_ssclash
 install_service
@@ -519,13 +671,8 @@ fi
 install_mihomo
 
 /etc/init.d/ssclash enable
-if pidof ssclash >/dev/null 2>&1; then
-	/etc/init.d/ssclash restart >/dev/null 2>&1 \
-		|| warn "service restart failed — run: /etc/init.d/ssclash start"
-else
-	/etc/init.d/ssclash start >/dev/null 2>&1 \
-		|| warn "service start skipped — open the web UI and press Start"
-fi
+/etc/init.d/ssclash start >/dev/null 2>&1 \
+	|| warn "service start skipped — open the web UI and press Start"
 
 IP=$(openwrt_lan_ip)
 UI_HOST=$(ui_effective_host "$IP")
@@ -536,5 +683,14 @@ cat <<EOF
  HTTPS (optional): use --tls-self-signed or --tls-cert/--tls-key on install.
    Change port/bind later: uncomment SSCLASH_ADDR in /etc/init.d/ssclash.
 
+ Summary:
+   ssclash:  ${SSCLASH_BIN} (${SSCLASH_TAG:-installed})
+   Mihomo:   ${MIHOMO_STATUS}
 EOF
+case "$MIHOMO_STATUS" in
+	installed*) ;;
+	*)
+		warn "Mihomo kernel not ready — open Settings → Mihomo kernel, then Start"
+		;;
+esac
 say "done. Open ${SCHEME}://${UI_HOST}:${UI_P}, set the admin password, then Start."

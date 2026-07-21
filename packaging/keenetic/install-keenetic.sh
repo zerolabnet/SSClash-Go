@@ -53,6 +53,7 @@ SSCLASH_BIN_URL=""
 SSCLASH_SVC_URL=""
 MIHOMO_ARCH=""
 SSCLASH_TAG=""
+MIHOMO_STATUS="skipped"
 
 say()  { echo "[ssclash] $*"; }
 info() { echo "[ssclash]   $*"; }
@@ -66,6 +67,137 @@ install_file() {
 	mkdir -p "$(dirname "$_dst")"
 	cp -f "$_src" "$_dst"
 	chmod "$_mode" "$_dst"
+}
+
+verify_downloaded_bin() {
+	_f="$1"
+	_label="${2:-binary}"
+	[ -s "$_f" ] || { warn "$_label is empty"; return 1; }
+	_sz=$(wc -c < "$_f" | tr -d ' ')
+	if [ "${_sz:-0}" -lt 1000000 ]; then
+		warn "$_label looks too small (${_sz} bytes) — not a release binary"
+		return 1
+	fi
+	if head -c 256 "$_f" | grep -qiE '<!DOCTYPE|<html|Not Found|rate limit|Error'; then
+		warn "$_label looks like an HTML/error page, not a binary"
+		return 1
+	fi
+	_hex=$(od -An -tx1 -N4 "$_f" 2>/dev/null | tr -d ' \n')
+	case "$_hex" in
+		7f454c46) return 0 ;;
+	esac
+	warn "$_label is not an ELF binary"
+	return 1
+}
+
+stop_bin_path() {
+	_bin="$1"
+	[ -n "$_bin" ] || return 0
+	if command -v fuser >/dev/null 2>&1; then
+		fuser -k "$_bin" >/dev/null 2>&1 || true
+	fi
+	for _p in /proc/[0-9]*; do
+		[ -L "$_p/exe" ] || continue
+		_exe=$(readlink "$_p/exe" 2>/dev/null || true)
+		case "$_exe" in
+			"$_bin"|"$_bin"*) kill -TERM "${_p#/proc/}" 2>/dev/null || true ;;
+		esac
+	done
+}
+
+install_bin() {
+	_src="$1"
+	_dst="$2"
+	_mode="${3:-755}"
+	_label="${4:-binary}"
+	verify_downloaded_bin "$_src" "$_label" || return 1
+	mkdir -p "$(dirname "$_dst")"
+	stop_ssclash_for_upgrade
+	stop_bin_path "$_dst"
+	_tmp="$(dirname "$_dst")/.ssclash-install.$$"
+	rm -f "$_tmp"
+	cp -f "$_src" "$_tmp"
+	chmod "$_mode" "$_tmp"
+	mv -f "$_tmp" "$_dst"
+	chmod "$_mode" "$_dst"
+	return 0
+}
+
+stop_ssclash_for_upgrade() {
+	_running=0
+	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+		_running=1
+	fi
+	pidof ssclash >/dev/null 2>&1 && _running=1
+	pidof clash >/dev/null 2>&1 && _running=1
+	for _p in /proc/[0-9]*; do
+		[ -L "$_p/exe" ] || continue
+		_exe=$(readlink "$_p/exe" 2>/dev/null || true)
+		case "$_exe" in
+			"$SSCLASH_BIN"|"$SSCLASH_BIN"*|"$CLASH_BIN"|"$CLASH_BIN"*) _running=1; break ;;
+		esac
+	done
+	[ "$_running" = "1" ] || return 0
+
+	say "stopping ssclash for safe upgrade / GitHub downloads..."
+	if [ -x "$INIT_DEST" ]; then
+		"$INIT_DEST" stop || true
+	fi
+	_i=0
+	while pidof ssclash >/dev/null 2>&1 && [ "$_i" -lt 20 ]; do
+		sleep 1
+		_i=$((_i + 1))
+	done
+	stop_bin_path "$SSCLASH_BIN"
+	stop_bin_path "$CLASH_BIN"
+	if pidof clash >/dev/null 2>&1; then
+		warn "stopping leftover Mihomo process..."
+		kill $(pidof clash) 2>/dev/null || true
+		sleep 1
+		kill -9 $(pidof clash) 2>/dev/null || true
+	fi
+}
+
+# Fetch from GitHub. Usage: github_get <url> [outfile]
+github_get_once() {
+	_url="$1"
+	_out="${2:-}"
+	_max="${GITHUB_GET_MAX_TIME:-${GITHUB_CURL_MAX_TIME:-120}}"
+	if command -v curl >/dev/null 2>&1; then
+		if [ -n "$_out" ]; then
+			curl -fsSL --retry 2 --connect-timeout 15 --max-time "$_max" -o "$_out" "$_url" \
+				&& [ -s "$_out" ]
+		else
+			curl -fsSL --retry 2 --connect-timeout 15 --max-time "$_max" "$_url"
+		fi
+		return $?
+	fi
+	if command -v wget >/dev/null 2>&1; then
+		if [ -n "$_out" ]; then
+			wget -T "$_max" -t 3 -qO "$_out" "$_url" && [ -s "$_out" ]
+		else
+			wget -T "$_max" -t 3 -qO- "$_url"
+		fi
+		return $?
+	fi
+	return 1
+}
+
+github_get() {
+	_url="$1"
+	_out="${2:-}"
+	if github_get_once "$_url" "$_out"; then
+		return 0
+	fi
+	if pidof ssclash >/dev/null 2>&1 || pidof clash >/dev/null 2>&1 \
+		|| { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; }; then
+		warn "GitHub request failed — stopping ssclash and retrying once..."
+		stop_ssclash_for_upgrade
+	else
+		warn "GitHub request failed — retrying once..."
+	fi
+	github_get_once "$_url" "$_out"
+	return $?
 }
 
 while [ $# -gt 0 ]; do
@@ -190,14 +322,13 @@ prepare_tls_certs
 [ -d /opt/bin ] || die "Entware /opt not found — install OPKG/Entware on USB first"
 [ -f /etc/openwrt_release ] && warn "OpenWrt detected — use packaging/openwrt/install-openwrt.sh instead"
 
-ensure_curl() {
-	if command -v curl >/dev/null 2>&1; then
+ensure_fetcher() {
+	if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
 		return 0
 	fi
-	command -v opkg >/dev/null 2>&1 || die "opkg not found"
-	say "installing curl via opkg..."
-	opkg update || die "opkg update failed"
-	opkg install curl ca-bundle || die "failed to install curl"
+	# Do not auto-install Entware packages — BusyBox/Entware wget is normally
+	# present; pulling curl/ca-bundle without consent can surprise Keenetic users.
+	die "need curl or wget in PATH (Entware example: opkg update && opkg install wget ca-bundle)"
 }
 
 # ---- Architecture (Keenetic Entware: mipsel, mips, aarch64) ------------------
@@ -246,8 +377,19 @@ detect_arch() {
 }
 
 fetch_ssclash_release() {
+	if [ -n "$FROM" ]; then
+		return 0
+	fi
+	if [ "$VERSION" != "latest" ]; then
+		SSCLASH_TAG="$VERSION"
+		SSCLASH_BIN_URL="https://github.com/${REPO}/releases/download/${SSCLASH_TAG}/ssclash-linux-${SSCLASH_ASSET}"
+		SSCLASH_SVC_URL="https://github.com/${REPO}/releases/download/${SSCLASH_TAG}/ssclash-keenetic-service.tar.gz"
+		info "release: ${SSCLASH_TAG}"
+		info "binary: ${SSCLASH_BIN_URL##*/}"
+		return 0
+	fi
 	say "fetching latest ssclash-go release..."
-	RELEASE_JSON=$(curl -fsSL "$SSCLASH_API") || die "GitHub API request failed"
+	RELEASE_JSON=$(github_get "$SSCLASH_API") || die "GitHub API request failed"
 	SSCLASH_TAG=$(printf '%s' "$RELEASE_JSON" \
 		| grep '"tag_name"' | head -1 \
 		| sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
@@ -272,17 +414,21 @@ install_ssclash() {
 	if [ -n "$FROM" ]; then
 		[ -f "$FROM" ] || die "binary not found: $FROM"
 		say "installing local binary: $FROM"
-		mkdir -p "$ROOT/bin"
-		install_file "$FROM" "$SSCLASH_BIN" 755
+		install_bin "$FROM" "$SSCLASH_BIN" 755 "ssclash" || die "ssclash install failed"
+		say "installed ${SSCLASH_BIN}"
 		return 0
 	fi
 
 	say "downloading ssclash..."
 	TMP="$(mktemp)"
-	curl -fSL --retry 2 --connect-timeout 15 --max-time 300 \
-		"$SSCLASH_BIN_URL" -o "$TMP" || die "ssclash download failed"
-	mkdir -p "$ROOT/bin"
-	install_file "$TMP" "$SSCLASH_BIN" 755
+	if ! GITHUB_GET_MAX_TIME=300 github_get "$SSCLASH_BIN_URL" "$TMP"; then
+		rm -f "$TMP"
+		die "ssclash download failed"
+	fi
+	if ! install_bin "$TMP" "$SSCLASH_BIN" 755 "ssclash"; then
+		rm -f "$TMP"
+		die "ssclash install failed (bad download?)"
+	fi
 	rm -f "$TMP"
 	say "installed ${SSCLASH_BIN}"
 }
@@ -315,16 +461,19 @@ mihomo_asset_url() {
 install_mihomo() {
 	if [ "$SKIP_MIHOMO" = "1" ]; then
 		warn "skipping Mihomo download (--no-mihomo)"
+		MIHOMO_STATUS="skipped (--no-mihomo)"
 		return 0
 	fi
 	if [ -z "$MIHOMO_ARCH" ]; then
 		warn "Mihomo architecture unknown — install from Settings later"
+		MIHOMO_STATUS="missing (unknown arch)"
 		return 0
 	fi
 
 	say "fetching latest Mihomo release..."
-	MIHOMO_JSON=$(curl -fsSL "$MIHOMO_API") || {
+	MIHOMO_JSON=$(github_get "$MIHOMO_API") || {
 		warn "Mihomo GitHub API request failed — install from Settings later"
+		MIHOMO_STATUS="missing (API failed)"
 		return 0
 	}
 	MIHOMO_VER=$(printf '%s' "$MIHOMO_JSON" \
@@ -332,34 +481,51 @@ install_mihomo() {
 		| sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
 	if [ -z "$MIHOMO_VER" ]; then
 		warn "could not parse Mihomo version — install from Settings later"
+		MIHOMO_STATUS="missing (parse failed)"
 		return 0
 	fi
 	info "Mihomo: ${MIHOMO_VER}"
 
 	MIHOMO_URL=$(mihomo_asset_url "$MIHOMO_VER" "$MIHOMO_ARCH") || {
 		warn "Mihomo asset for ${MIHOMO_ARCH} not found — install from Settings later"
+		MIHOMO_STATUS="missing (no asset for ${MIHOMO_ARCH})"
 		return 0
 	}
 
+	_tmp_gz="$(mktemp)"
+	_tmp_bin="$(mktemp)"
 	say "downloading Mihomo kernel..."
-	if ! curl -fSL --retry 2 --connect-timeout 15 --max-time 300 \
-		"$MIHOMO_URL" -o /tmp/clash.gz; then
+	if ! GITHUB_GET_MAX_TIME=300 github_get "$MIHOMO_URL" "$_tmp_gz"; then
 		warn "Mihomo download failed — install from Settings later"
-		rm -f /tmp/clash.gz
+		rm -f "$_tmp_gz" "$_tmp_bin"
+		MIHOMO_STATUS="missing (download failed)"
 		return 0
 	fi
 
-	mkdir -p "$(dirname "$CLASH_BIN")"
-	if ! gunzip -c /tmp/clash.gz > "$CLASH_BIN"; then
-		warn "Mihomo extraction failed — install from Settings later"
-		rm -f /tmp/clash.gz "$CLASH_BIN"
+	if ! gunzip -c "$_tmp_gz" > "$_tmp_bin"; then
+		warn "Mihomo extraction failed — keeping existing kernel; install from Settings later"
+		rm -f "$_tmp_gz" "$_tmp_bin"
+		MIHOMO_STATUS="missing (extract failed)"
 		return 0
 	fi
+	rm -f "$_tmp_gz"
+	chmod +x "$_tmp_bin"
+
+	if ! verify_downloaded_bin "$_tmp_bin" "Mihomo" || ! "$_tmp_bin" -v >/dev/null 2>&1; then
+		warn "downloaded Mihomo binary does not run on this host — keeping existing kernel"
+		rm -f "$_tmp_bin"
+		MIHOMO_STATUS="missing (bad/wrong-arch binary)"
+		return 0
+	fi
+
+	stop_ssclash_for_upgrade
+	mkdir -p "$(dirname "$CLASH_BIN")"
+	mv -f "$_tmp_bin" "$CLASH_BIN"
 	chmod +x "$CLASH_BIN"
-	rm -f /tmp/clash.gz
 
 	MIHOMO_V=$("$CLASH_BIN" -v 2>/dev/null || true)
 	say "Mihomo installed: ${MIHOMO_V:-ok}"
+	MIHOMO_STATUS="installed (${MIHOMO_V:-$MIHOMO_VER})"
 }
 
 install_init() {
@@ -375,7 +541,7 @@ install_init() {
 
 	if [ -n "$SSCLASH_SVC_URL" ]; then
 		say "installing Entware init from release..."
-		curl -fSL "$SSCLASH_SVC_URL" -o /tmp/ssclash-keenetic-svc.tgz \
+		GITHUB_GET_MAX_TIME=300 github_get "$SSCLASH_SVC_URL" /tmp/ssclash-keenetic-svc.tgz \
 			&& tar -xzf /tmp/ssclash-keenetic-svc.tgz -C / \
 			&& rm -f /tmp/ssclash-keenetic-svc.tgz \
 			|| die "could not install Keenetic service bundle"
@@ -390,23 +556,22 @@ install_init() {
 
 write_settings() {
 	mkdir -p "$ROOT/.ssclash" "$ROOT/local-rules" "$ROOT/rule-providers" "$ROOT/proxy-providers" "$ROOT/subscriptions" "$ROOT/ui"
-	set_kv() {
+	# Only seed missing keys — never overwrite values on upgrade.
+	set_default() {
 		_key="$1"
 		_val="$2"
 		if [ -f "$SETTINGS" ] && grep -q "^${_key}=" "$SETTINGS" 2>/dev/null; then
-			_tmp="$SETTINGS.tmp"
-			sed "s|^${_key}=.*|${_key}=${_val}|" "$SETTINGS" > "$_tmp" && mv "$_tmp" "$SETTINGS"
-		else
-			printf '%s=%s\n' "$_key" "$_val" >> "$SETTINGS"
+			return 0
 		fi
+		printf '%s=%s\n' "$_key" "$_val" >> "$SETTINGS"
 	}
-	set_kv OPERATING_MODE gateway
-	set_kv PROXY_MODE tproxy
-	set_kv ENABLE_NAT_MASQUERADE true
-	set_kv ENABLE_DNS_UPSTREAM true
-	set_kv ENABLE_DNS_REDIRECT false
+	set_default OPERATING_MODE gateway
+	set_default PROXY_MODE tproxy
+	set_default ENABLE_NAT_MASQUERADE true
+	set_default ENABLE_DNS_UPSTREAM true
+	set_default ENABLE_DNS_REDIRECT false
 	# Applies only after config.yaml uses fake-ip-filter-mode whitelist/rule.
-	set_kv AUTO_FAKEIP_WHITELIST true
+	set_default AUTO_FAKEIP_WHITELIST true
 }
 
 check_netfilter_modules() {
@@ -443,9 +608,10 @@ lan_ip() {
 
 # ---- MAIN --------------------------------------------------------------------
 say "SSClash-Go installer (Keenetic / Entware)"
-ensure_curl
+ensure_fetcher
 check_netfilter_modules
 detect_arch
+stop_ssclash_for_upgrade
 fetch_ssclash_release
 install_ssclash
 write_settings
@@ -464,11 +630,15 @@ cat <<EOF
 ==========================================================================
  SSClash-Go installed (gateway mode) under $ROOT.
 
+ Summary:
+   ssclash:  ${SSCLASH_BIN} (${SSCLASH_TAG:-installed})
+   Mihomo:   ${MIHOMO_STATUS}
+
  Before first Start, verify in Keenetic web UI (Components):
    - Netfilter subsystem kernel modules — enabled
    - USB / Entware / OPKG — working
 
- Defaults written to $SETTINGS:
+ Defaults written only if missing in $SETTINGS:
    PROXY_MODE=tproxy, ENABLE_NAT_MASQUERADE=true, AUTO_FAKEIP_WHITELIST=true
    (AUTO_FAKEIP_WHITELIST applies only when config.yaml uses fake-ip whitelist)
 
@@ -490,3 +660,9 @@ cat <<EOF
  policy in Keenetic for devices that should use the proxy.
 ==========================================================================
 EOF
+case "$MIHOMO_STATUS" in
+	installed*) ;;
+	*)
+		warn "Mihomo kernel not ready — open Settings → Mihomo kernel, then Start"
+		;;
+esac

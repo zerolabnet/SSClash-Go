@@ -68,7 +68,7 @@ Each installer fetches the matching release binary, sets up `/opt/clash`, downlo
 wget -T 30 -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash
 ```
 
-SSClash does **not** need to be stopped before upgrade in the common case. If a GitHub download fails while ssclash is running, the installer stops the service once and retries automatically. To disable that, pass `--keep-running`.
+SSClash **stops itself** before upgrade when the service is already running (so GitHub downloads work through transparent proxy and binaries can be replaced safely).
 
 **Generic Linux** (systemd):
 
@@ -96,7 +96,6 @@ wget -T 30 -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/ins
 | `--version <tag>` | Download a specific release tag (default: latest) |
 | `--from <path>` | Install a local binary instead of downloading |
 | `--no-mihomo` | Skip Mihomo kernel download (all installers) |
-| `--keep-running` | OpenWrt — do not stop ssclash on GitHub retry (all installers pass-through) |
 
 Examples:
 

@@ -44,6 +44,7 @@ VERSION="latest"
 MODE=""
 SKIP_MIHOMO=0
 MIHOMO_INSTALLED=0
+MIHOMO_STATUS="skipped"
 UI_BIND=""
 UI_ADDR=""
 TLS_CERT=""
@@ -52,6 +53,7 @@ TLS_SELF_SIGNED=0
 
 err() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo ">> $*"; }
+warn() { echo "WARNING: $*" >&2; }
 
 install_file() {
 	_src="$1"
@@ -61,7 +63,143 @@ install_file() {
 	cp -f "$_src" "$_dst"
 	chmod "$_mode" "$_dst"
 }
-warn() { echo "WARNING: $*" >&2; }
+
+verify_downloaded_bin() {
+	_f="$1"
+	_label="${2:-binary}"
+	[ -s "$_f" ] || { warn "$_label is empty"; return 1; }
+	_sz=$(wc -c < "$_f" | tr -d ' ')
+	if [ "${_sz:-0}" -lt 1000000 ]; then
+		warn "$_label looks too small (${_sz} bytes) — not a release binary"
+		return 1
+	fi
+	if head -c 256 "$_f" | grep -qiE '<!DOCTYPE|<html|Not Found|rate limit|Error'; then
+		warn "$_label looks like an HTML/error page, not a binary"
+		return 1
+	fi
+	_hex=$(od -An -tx1 -N4 "$_f" 2>/dev/null | tr -d ' \n')
+	case "$_hex" in
+		7f454c46) return 0 ;;
+	esac
+	warn "$_label is not an ELF binary"
+	return 1
+}
+
+stop_bin_path() {
+	_bin="$1"
+	[ -n "$_bin" ] || return 0
+	if command -v fuser >/dev/null 2>&1; then
+		fuser -k "$_bin" >/dev/null 2>&1 || true
+	fi
+	for _p in /proc/[0-9]*; do
+		[ -L "$_p/exe" ] || continue
+		_exe=$(readlink "$_p/exe" 2>/dev/null || true)
+		case "$_exe" in
+			"$_bin"|"$_bin"*) kill -TERM "${_p#/proc/}" 2>/dev/null || true ;;
+		esac
+	done
+}
+
+install_bin() {
+	_src="$1"
+	_dst="$2"
+	_mode="${3:-755}"
+	_label="${4:-binary}"
+	verify_downloaded_bin "$_src" "$_label" || return 1
+	mkdir -p "$(dirname "$_dst")"
+	stop_ssclash_for_upgrade
+	stop_bin_path "$_dst"
+	_tmp="$(dirname "$_dst")/.ssclash-install.$$"
+	rm -f "$_tmp"
+	cp -f "$_src" "$_tmp"
+	chmod "$_mode" "$_tmp"
+	mv -f "$_tmp" "$_dst"
+	chmod "$_mode" "$_dst"
+	return 0
+}
+
+stop_ssclash_for_upgrade() {
+	_running=0
+	if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet ssclash.service 2>/dev/null; then
+		_running=1
+	fi
+	pidof ssclash >/dev/null 2>&1 && _running=1
+	pidof clash >/dev/null 2>&1 && _running=1
+	for _p in /proc/[0-9]*; do
+		[ -L "$_p/exe" ] || continue
+		_exe=$(readlink "$_p/exe" 2>/dev/null || true)
+		case "$_exe" in
+			"$DEST"|"$DEST"*|"$CLASH_BIN"|"$CLASH_BIN"*) _running=1; break ;;
+		esac
+	done
+	[ "$_running" = "1" ] || return 0
+
+	info "Stopping ssclash for safe upgrade / GitHub downloads..."
+	if command -v systemctl >/dev/null 2>&1; then
+		systemctl stop ssclash.service 2>/dev/null || true
+	fi
+	_i=0
+	while pidof ssclash >/dev/null 2>&1 && [ "$_i" -lt 20 ]; do
+		sleep 1
+		_i=$((_i + 1))
+	done
+	stop_bin_path "$DEST"
+	stop_bin_path "$CLASH_BIN"
+	if pidof clash >/dev/null 2>&1; then
+		warn "stopping leftover Mihomo process..."
+		kill $(pidof clash) 2>/dev/null || true
+		sleep 1
+		kill -9 $(pidof clash) 2>/dev/null || true
+	fi
+}
+
+github_get_once() {
+	_url="$1"
+	_out="${2:-}"
+	_max="${GITHUB_GET_MAX_TIME:-${GITHUB_CURL_MAX_TIME:-120}}"
+	if command -v curl >/dev/null 2>&1; then
+		if [ -n "$_out" ]; then
+			curl -fsSL --retry 2 --connect-timeout 15 --max-time "$_max" -o "$_out" "$_url" \
+				&& [ -s "$_out" ]
+		else
+			curl -fsSL --retry 2 --connect-timeout 15 --max-time "$_max" "$_url"
+		fi
+		return $?
+	fi
+	if command -v wget >/dev/null 2>&1; then
+		if [ -n "$_out" ]; then
+			wget -T "$_max" -t 3 -qO "$_out" "$_url" && [ -s "$_out" ]
+		else
+			wget -T "$_max" -t 3 -qO- "$_url"
+		fi
+		return $?
+	fi
+	return 1
+}
+
+github_get() {
+	_url="$1"
+	_out="${2:-}"
+	if github_get_once "$_url" "$_out"; then
+		return 0
+	fi
+	if pidof ssclash >/dev/null 2>&1 || pidof clash >/dev/null 2>&1 \
+		|| { command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet ssclash.service 2>/dev/null; }; then
+		warn "GitHub request failed — stopping ssclash and retrying once..."
+		stop_ssclash_for_upgrade
+	else
+		warn "GitHub request failed — retrying once..."
+	fi
+	github_get_once "$_url" "$_out"
+	return $?
+}
+
+ensure_fetcher() {
+	if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
+		return 0
+	fi
+	err "curl or wget is required to download (or use --from)"
+}
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -236,24 +374,29 @@ mihomo_asset_url() {
 install_mihomo() {
 	if [ "$SKIP_MIHOMO" = "1" ]; then
 		warn "skipping Mihomo download (--no-mihomo)"
+		MIHOMO_STATUS="skipped (--no-mihomo)"
 		return 0
 	fi
 	if [ -z "$MIHOMO_ARCH" ]; then
 		warn "Mihomo architecture unknown — install from Settings later"
+		MIHOMO_STATUS="missing (unknown arch)"
 		return 0
 	fi
-	command -v curl >/dev/null 2>&1 || {
-		warn "curl not found — install Mihomo from Settings later"
+	command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || {
+		warn "curl/wget not found — install Mihomo from Settings later"
+		MIHOMO_STATUS="missing (no curl/wget)"
 		return 0
 	}
 	command -v gunzip >/dev/null 2>&1 || command -v gzip >/dev/null 2>&1 || {
 		warn "gunzip/gzip not found — install Mihomo from Settings later"
+		MIHOMO_STATUS="missing (no gunzip)"
 		return 0
 	}
 
 	info "Fetching latest Mihomo release..."
-	MIHOMO_JSON=$(curl -fsSL --max-time 20 "$MIHOMO_API") || {
+	MIHOMO_JSON=$(github_get "$MIHOMO_API") || {
 		warn "Mihomo GitHub API request failed — install from Settings later"
+		MIHOMO_STATUS="missing (API failed)"
 		return 0
 	}
 	MIHOMO_VER=$(printf '%s' "$MIHOMO_JSON" \
@@ -261,58 +404,79 @@ install_mihomo() {
 		| sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
 	if [ -z "$MIHOMO_VER" ]; then
 		warn "could not parse Mihomo version — install from Settings later"
+		MIHOMO_STATUS="missing (parse failed)"
 		return 0
 	fi
 	info "Mihomo: ${MIHOMO_VER}"
 
 	MIHOMO_URL=$(mihomo_asset_url "$MIHOMO_VER" "$MIHOMO_ARCH") || {
 		warn "Mihomo asset for ${MIHOMO_ARCH} not found — install from Settings later"
+		MIHOMO_STATUS="missing (no asset for ${MIHOMO_ARCH})"
 		return 0
 	}
 
+	_tmp_gz="$(mktemp)"
+	_tmp_bin="$(mktemp)"
 	info "Downloading Mihomo kernel..."
-	if ! curl -fSL --retry 2 --connect-timeout 15 --max-time 300 \
-		"$MIHOMO_URL" -o /tmp/clash.gz; then
+	if ! GITHUB_GET_MAX_TIME=300 github_get "$MIHOMO_URL" "$_tmp_gz"; then
 		warn "Mihomo download failed — install from Settings later"
-		rm -f /tmp/clash.gz
+		rm -f "$_tmp_gz" "$_tmp_bin"
+		MIHOMO_STATUS="missing (download failed)"
 		return 0
 	fi
 
-	mkdir -p "$(dirname "$CLASH_BIN")"
 	if command -v gunzip >/dev/null 2>&1; then
 		_gunzip='gunzip -c'
 	else
 		_gunzip='gzip -dc'
 	fi
-	if ! $_gunzip /tmp/clash.gz > "$CLASH_BIN"; then
-		warn "Mihomo extraction failed — install from Settings later"
-		rm -f /tmp/clash.gz "$CLASH_BIN"
+	if ! $_gunzip "$_tmp_gz" > "$_tmp_bin"; then
+		warn "Mihomo extraction failed — keeping existing kernel; install from Settings later"
+		rm -f "$_tmp_gz" "$_tmp_bin"
+		MIHOMO_STATUS="missing (extract failed)"
 		return 0
 	fi
+	rm -f "$_tmp_gz"
+	chmod +x "$_tmp_bin"
+
+	if ! verify_downloaded_bin "$_tmp_bin" "Mihomo" || ! "$_tmp_bin" -v >/dev/null 2>&1; then
+		warn "downloaded Mihomo binary does not run on this host — keeping existing kernel"
+		rm -f "$_tmp_bin"
+		MIHOMO_STATUS="missing (bad/wrong-arch binary)"
+		return 0
+	fi
+
+	stop_ssclash_for_upgrade
+	mkdir -p "$(dirname "$CLASH_BIN")"
+	mv -f "$_tmp_bin" "$CLASH_BIN"
 	chmod +x "$CLASH_BIN"
-	rm -f /tmp/clash.gz /opt/clash/bin/meta-backup 2>/dev/null || true
+	rm -f /opt/clash/bin/meta-backup 2>/dev/null || true
 
 	MIHOMO_V=$("$CLASH_BIN" -v 2>/dev/null || true)
 	info "Mihomo installed: ${MIHOMO_V:-ok}"
 	MIHOMO_INSTALLED=1
+	MIHOMO_STATUS="installed (${MIHOMO_V:-$MIHOMO_VER})"
 }
 
 TMP_BIN=""
 cleanup() { [ -n "$TMP_BIN" ] && rm -f "$TMP_BIN"; }
 trap cleanup EXIT INT TERM
 
+# Stop early so binary replace and GitHub downloads are reliable.
+stop_ssclash_for_upgrade
+
 if [ -n "$FROM" ]; then
 	[ -f "$FROM" ] || err "Binary not found: $FROM"
 	BIN_SRC="$FROM"
 	info "Using local binary: $BIN_SRC"
 else
-	command -v curl >/dev/null 2>&1 || err "curl is required to download the binary (or use --from)."
+	ensure_fetcher
 	ARCH="$(map_arch "$(uname -m)")"
 	[ -n "$ARCH" ] || err "Unsupported architecture: $(uname -m). Build locally and use --from."
 
 	if [ "$VERSION" = "latest" ]; then
 		info "Resolving latest release tag for $REPO"
-		VERSION="$(curl -fsSL --max-time 20 "https://api.github.com/repos/$REPO/releases/latest" \
+		VERSION="$(github_get "https://api.github.com/repos/$REPO/releases/latest" \
 			| sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
 		[ -n "$VERSION" ] || err "Could not determine latest release tag."
 	fi
@@ -321,7 +485,7 @@ else
 	URL="https://github.com/$REPO/releases/download/$VERSION/$ASSET"
 	TMP_BIN="$(mktemp)"
 	info "Downloading $ASSET ($VERSION)"
-	curl -fL --max-time 300 -o "$TMP_BIN" "$URL" \
+	GITHUB_GET_MAX_TIME=300 github_get "$URL" "$TMP_BIN" \
 		|| err "Download failed: $URL"
 	BIN_SRC="$TMP_BIN"
 fi
@@ -330,12 +494,14 @@ info "Creating working directory $ROOT"
 mkdir -p "$ROOT/bin" "$ROOT/.ssclash" "$ROOT/local-rules" "$ROOT/rule-providers" "$ROOT/proxy-providers" "$ROOT/subscriptions" "$ROOT/ui"
 
 info "Installing binary -> $DEST"
-install_file "$BIN_SRC" "$DEST" 755
+install_bin "$BIN_SRC" "$DEST" 755 "ssclash" || err "ssclash install failed (bad download?)"
 
 install_mihomo
 
 info "Recording operating mode in $SETTINGS"
 if [ -f "$SETTINGS" ] && grep -q '^OPERATING_MODE=' "$SETTINGS" 2>/dev/null; then
+	# Keep existing OPERATING_MODE on upgrade unless this install explicitly chose one
+	# via interactive prompt / --mode (MODE is always set before this point).
 	tmp="$SETTINGS.tmp"
 	sed "s/^OPERATING_MODE=.*/OPERATING_MODE=$MODE/" "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
 else
@@ -405,18 +571,26 @@ cat <<EOF
 ==========================================================================
  SSClash-Go installed ($MODE mode) — everything under $ROOT.
 
+ Summary:
+   ssclash:  $DEST (${VERSION:-installed})
+   Mihomo:   ${MIHOMO_STATUS}
+
  1. Open the web UI:   ${SCHEME}://${UI_HOST}:${UI_P}
     (set the admin password on first visit)
 EOF
-if [ "$MIHOMO_INSTALLED" = "1" ]; then
-	cat <<EOF
+case "$MIHOMO_STATUS" in
+	installed*)
+		cat <<EOF
  2. Settings -> edit config.yaml, then Start.
 EOF
-else
-	cat <<EOF
+		;;
+	*)
+		cat <<EOF
  2. Settings -> download the Mihomo kernel, edit config.yaml, then Start.
 EOF
-fi
+		warn "Mihomo kernel not ready — open Settings → Mihomo kernel, then Start"
+		;;
+esac
 if [ "$MODE" = "gateway" ]; then
 	cat <<EOF
 
