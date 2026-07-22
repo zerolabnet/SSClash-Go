@@ -23,6 +23,7 @@ set -e
 echo "[ssclash] installer loaded" >&2
 
 REPO="zerolabnet/SSClash-Go"
+GITHUB_RAW="https://github.com/${REPO}/raw/refs/heads/main"
 SSCLASH_API="https://api.github.com/repos/${REPO}/releases/latest"
 MIHOMO_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 
@@ -518,23 +519,48 @@ install_ssclash() {
 }
 
 # ---- 7. procd service -------------------------------------------------------
+install_init_from_raw() {
+	_url="${GITHUB_RAW}/packaging/openwrt/etc/init.d/ssclash"
+	_tmp="/tmp/ssclash-init.$$"
+	say "fetching init.d/ssclash from repository..."
+	if github_get "$_url" "$_tmp" && [ -s "$_tmp" ]; then
+		install_file "$_tmp" /etc/init.d/ssclash 755
+		rm -f "$_tmp"
+		return 0
+	fi
+	rm -f "$_tmp"
+	return 1
+}
+
 install_service() {
 	mkdir -p "$ROOT/.ssclash" "$ROOT/local-rules" "$ROOT/rule-providers" "$ROOT/proxy-providers" "$ROOT/subscriptions" "$ROOT/ui"
 
 	SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 	if [ -f "$SCRIPT_DIR/etc/init.d/ssclash" ]; then
 		install_file "$SCRIPT_DIR/etc/init.d/ssclash" /etc/init.d/ssclash 755
+		configure_openwrt_init
 		return 0
 	fi
 
+	_svc_ok=0
 	if [ -n "$SSCLASH_SVC_URL" ]; then
 		say "installing init.d service from release..."
-		GITHUB_GET_MAX_TIME=300 github_get "$SSCLASH_SVC_URL" /tmp/ssclash-svc.tgz \
-			&& tar -xzf /tmp/ssclash-svc.tgz -C / \
-			&& rm -f /tmp/ssclash-svc.tgz \
-			|| warn "could not install service bundle"
-	else
-		warn "init.d/ssclash not found locally and no service bundle in release"
+		info "downloading ssclash-openwrt-service.tar.gz (${SSCLASH_TAG:-release})..."
+		if GITHUB_GET_MAX_TIME=120 github_get "$SSCLASH_SVC_URL" /tmp/ssclash-svc.tgz; then
+			info "extracting service files..."
+			if tar -xzf /tmp/ssclash-svc.tgz -C /; then
+				_svc_ok=1
+			else
+				warn "could not extract service bundle"
+			fi
+			rm -f /tmp/ssclash-svc.tgz
+		else
+			warn "could not download service bundle from release"
+		fi
+	fi
+
+	if [ "$_svc_ok" = "0" ]; then
+		install_init_from_raw || warn "init.d/ssclash not installed — copy from release or re-run installer"
 	fi
 	configure_openwrt_init
 }

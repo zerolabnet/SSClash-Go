@@ -29,6 +29,7 @@
 set -eu
 
 REPO="zerolabnet/SSClash-Go"
+GITHUB_RAW="https://github.com/${REPO}/raw/refs/heads/main"
 SSCLASH_API="https://api.github.com/repos/${REPO}/releases/latest"
 MIHOMO_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 
@@ -538,6 +539,20 @@ install_mihomo() {
 	MIHOMO_STATUS="installed (${MIHOMO_V:-$MIHOMO_VER})"
 }
 
+install_init_from_raw() {
+	_url="${GITHUB_RAW}/packaging/keenetic/etc/init.d/S99ssclash"
+	_tmp="/tmp/ssclash-init.$$"
+	say "fetching S99ssclash from repository..."
+	if github_get "$_url" "$_tmp" && [ -s "$_tmp" ]; then
+		mkdir -p /opt/etc/init.d /opt/var/run
+		install_file "$_tmp" "$INIT_DEST" 755
+		rm -f "$_tmp"
+		return 0
+	fi
+	rm -f "$_tmp"
+	return 1
+}
+
 install_init() {
 	SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 	SRC="$SCRIPT_DIR/etc/init.d/S99ssclash"
@@ -549,19 +564,36 @@ install_init() {
 		return 0
 	fi
 
+	_svc_ok=0
 	if [ -n "$SSCLASH_SVC_URL" ]; then
 		say "installing Entware init from release..."
-		GITHUB_GET_MAX_TIME=300 github_get "$SSCLASH_SVC_URL" /tmp/ssclash-keenetic-svc.tgz \
-			&& tar -xzf /tmp/ssclash-keenetic-svc.tgz -C / \
-			&& rm -f /tmp/ssclash-keenetic-svc.tgz \
-			|| die "could not install Keenetic service bundle"
-		[ -x "$INIT_DEST" ] || die "init script missing after service bundle extract: $INIT_DEST"
+		info "downloading ssclash-keenetic-service.tar.gz (${SSCLASH_TAG:-release})..."
+		if GITHUB_GET_MAX_TIME=120 github_get "$SSCLASH_SVC_URL" /tmp/ssclash-keenetic-svc.tgz; then
+			info "extracting service files..."
+			if tar -xzf /tmp/ssclash-keenetic-svc.tgz -C /; then
+				_svc_ok=1
+			else
+				warn "could not extract service bundle"
+			fi
+			rm -f /tmp/ssclash-keenetic-svc.tgz
+		else
+			warn "could not download service bundle from release"
+		fi
+	fi
+
+	if [ "$_svc_ok" = "1" ] && [ -x "$INIT_DEST" ]; then
 		say "installed Entware init -> $INIT_DEST"
 		configure_keenetic_init
 		return 0
 	fi
 
-	die "init script missing locally and ssclash-keenetic-service.tar.gz not found in release"
+	if install_init_from_raw; then
+		say "installed Entware init -> $INIT_DEST"
+		configure_keenetic_init
+		return 0
+	fi
+
+	die "init script missing — re-run installer or copy S99ssclash manually"
 }
 
 write_settings() {
