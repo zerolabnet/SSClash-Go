@@ -83,7 +83,13 @@ verify_downloaded_bin() {
 		warn "$_label looks like an HTML/error page, not a binary"
 		return 1
 	fi
-	_hex=$(od -An -tx1 -N4 "$_f" 2>/dev/null | tr -d ' \n')
+	# ELF magic 0x7f 'E' 'L' 'F' (Entware/BusyBox od has no -A; parse first line if needed)
+	_elf=$(printf '\177ELF')
+	_hdr=$(head -c 4 "$_f" 2>/dev/null || true)
+	if [ "$_hdr" = "$_elf" ]; then
+		return 0
+	fi
+	_hex=$(od -tx1 -N4 "$_f" 2>/dev/null | head -1 | sed 's/^[0-9a-f]* *//' | tr -d ' \n')
 	case "$_hex" in
 		7f454c46) return 0 ;;
 	esac
