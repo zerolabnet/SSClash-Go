@@ -636,6 +636,22 @@ check_netfilter_modules() {
 	fi
 }
 
+# pick_lan_ipv4 prefers RFC1918 from global addresses (avoids WAN/KeenDNS in hints).
+pick_lan_ipv4() {
+	_first=""
+	for _ip in $(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1); do
+		[ -z "$_ip" ] && continue
+		[ -z "$_first" ] && _first="$_ip"
+		case "$_ip" in
+			10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*)
+				echo "$_ip"
+				return 0
+				;;
+		esac
+	done
+	[ -n "$_first" ] && echo "$_first"
+}
+
 start_service() {
 	if [ ! -x "$INIT_DEST" ]; then
 		return 0
@@ -650,8 +666,7 @@ start_service() {
 }
 
 lan_ip() {
-	ip -4 -o addr show scope global 2>/dev/null \
-		| awk '{print $4}' | cut -d/ -f1 | head -n1
+	pick_lan_ipv4
 }
 
 # ---- MAIN --------------------------------------------------------------------

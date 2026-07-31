@@ -313,11 +313,32 @@ ui_effective_host() {
 
 openwrt_lan_ip() {
 	_ip=$(uci -q get network.lan.ipaddr 2>/dev/null || true)
-	if [ -z "$_ip" ]; then
-		echo "<router-ip>"
+	if [ -n "$_ip" ]; then
+		echo "${_ip%%/*}"
 		return
 	fi
-	echo "${_ip%%/*}"
+	_ip=$(pick_lan_ipv4)
+	if [ -n "$_ip" ]; then
+		echo "$_ip"
+		return
+	fi
+	echo "<router-ip>"
+}
+
+# pick_lan_ipv4 prefers RFC1918 from global addresses (avoids WAN in install hints).
+pick_lan_ipv4() {
+	_first=""
+	for _ip in $(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1); do
+		[ -z "$_ip" ] && continue
+		[ -z "$_first" ] && _first="$_ip"
+		case "$_ip" in
+			10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*)
+				echo "$_ip"
+				return 0
+				;;
+		esac
+	done
+	[ -n "$_first" ] && echo "$_first"
 }
 
 configure_openwrt_init() {

@@ -288,6 +288,22 @@ ui_scheme() {
 	if [ -n "$TLS_CERT" ]; then echo https; else echo http; fi
 }
 
+# pick_lan_ipv4 prefers RFC1918 from global addresses (avoids public WAN in hints).
+pick_lan_ipv4() {
+	_first=""
+	for _ip in $(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1); do
+		[ -z "$_ip" ] && continue
+		[ -z "$_first" ] && _first="$_ip"
+		case "$_ip" in
+			10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*)
+				echo "$_ip"
+				return 0
+				;;
+		esac
+	done
+	[ -n "$_first" ] && echo "$_first"
+}
+
 ui_effective_port() {
 	if [ -n "$UI_ADDR" ]; then
 		case "$UI_ADDR" in
@@ -573,7 +589,7 @@ systemctl daemon-reload
 systemctl enable ssclash.service >/dev/null 2>&1 || true
 systemctl restart ssclash.service
 
-LAN_IP="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
+LAN_IP="$(pick_lan_ipv4)"
 [ -n "$LAN_IP" ] || LAN_IP="<lan-ip>"
 UI_HOST=$(ui_effective_host "$LAN_IP")
 UI_P=$(ui_effective_port)
