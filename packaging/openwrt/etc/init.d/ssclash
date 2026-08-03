@@ -24,6 +24,8 @@ start_service() {
 	# procd_set_param env SSCLASH_TLS_CERT="$TLS_CERT"
 	# procd_set_param env SSCLASH_TLS_KEY="$TLS_KEY"
 	procd_set_param respawn 3600 5 0
+	# Avoid EMFILE under dead-proxy/DNS connection storms (default soft nofile is often 1024).
+	procd_set_param limits nofile="1048576 1048576"
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	procd_set_param pidfile "$PIDFILE"

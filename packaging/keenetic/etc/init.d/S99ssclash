@@ -26,6 +26,8 @@ start() {
 	fi
 	mkdir -p "$(dirname "$PIDFILE")"
 	echo "Starting ssclash..."
+	# Avoid EMFILE under dead-proxy/DNS connection storms (default soft nofile is often 1024).
+	ulimit -n 1048576 2>/dev/null || ulimit -n 65536 2>/dev/null || true
 	"$PROG" serve &
 	echo $! > "$PIDFILE"
 }
