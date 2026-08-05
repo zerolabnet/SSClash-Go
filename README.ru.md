@@ -180,6 +180,10 @@ curl -fsSL https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-
 
 Сначала установите Entware на USB. В веб-UI Keenetic → Компоненты включите **Open packages**, **Ext file system**, **Netfilter kernel modules**.
 
+Для policy routing нужен полноценный iproute2: апплет `ip` из BusyBox часто
+собран без поддержки `rule`. Инсталлятор это проверяет и при необходимости
+подскажет выполнить `opkg install ip-full`.
+
 ```bash
 wget -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash
 ```
@@ -188,6 +192,14 @@ wget -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-s
 DNS по умолчанию через ndmc upstream (`127.0.0.1:7874`) в Настройках — на части
 прошивок ndmc может не принять нестандартный порт; если перехват DNS не работает,
 включите **Firewall redirect** в Настройках (или настройте DNS вручную).
+
+KeeneticOS перестраивает netfilter при сохранении конфигурации, переподключении
+WAN и смене компонентов, стирая переходы в цепочки SSClash. Чтобы это пережить,
+при Start устанавливается NDMS-хук `/opt/etc/ndm/netfilter.d/50-ssclash.sh`: он
+проверяет правила после каждой перестройки и при необходимости применяет их
+заново. Stop удаляет хук. Так как netfilter в Keenetic работает через iptables,
+бэкенд iptables выбирается автоматически даже при установленном пакете
+`nftables` из Entware.
 
 ## Шаг 4: Управление ядром Mihomo
 
@@ -390,6 +402,7 @@ sudo rm -rf /opt/clash
 ```bash
 /opt/etc/init.d/S99ssclash stop
 rm -f /opt/etc/init.d/S99ssclash
+rm -f /opt/etc/ndm/netfilter.d/50-ssclash.sh
 rm -rf /opt/clash
 ```
 

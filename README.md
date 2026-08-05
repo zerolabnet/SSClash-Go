@@ -180,6 +180,10 @@ Gateway mode applies firewall, policy routing and DNS redirect when you press **
 
 Install Entware on USB first. Enable **Open packages**, **Ext file system**, **Netfilter kernel modules** in Keenetic web UI → Components.
 
+Policy routing needs the full iproute2 binary; BusyBox's `ip` applet is often
+built without `rule` support. The installer checks this and tells you to run
+`opkg install ip-full` when needed.
+
 ```bash
 wget -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash
 ```
@@ -188,6 +192,13 @@ Default: TPROXY + Exclude mode, NAT masquerade on WAN, **Auto fake-ip whitelist*
 DNS defaults to ndmc upstream (`127.0.0.1:7874`) in Settings — on some firmware
 ndmc may reject a non-standard port; if DNS interception fails, enable
 **Firewall redirect** in Settings instead (or configure DNS manually).
+
+KeeneticOS rebuilds netfilter on configuration save, WAN reconnect and component
+changes, which drops the jumps into the SSClash chains. To survive that, Start
+installs an NDMS hook at `/opt/etc/ndm/netfilter.d/50-ssclash.sh` that verifies
+the ruleset after every rebuild and re-applies it when needed. Stop removes the
+hook. Since Keenetic's netfilter stack is iptables-based, the iptables backend is
+selected automatically even when the Entware `nftables` package is installed.
 
 ## Step 4: Mihomo kernel management
 
@@ -390,6 +401,7 @@ sudo rm -rf /opt/clash
 ```bash
 /opt/etc/init.d/S99ssclash stop
 rm -f /opt/etc/init.d/S99ssclash
+rm -f /opt/etc/ndm/netfilter.d/50-ssclash.sh
 rm -rf /opt/clash
 ```
 

@@ -2,10 +2,15 @@
 # SSClash-Go — Entware init script for Keenetic (generic Linux gateway path).
 # Install to /opt/etc/init.d/S99ssclash
 
+ENABLED=yes
+DESC="SSClash-Go"
+
 PATH=/opt/sbin:/opt/bin:/sbin:/bin:/usr/sbin:/usr/bin
 ROOT=/opt/clash
 PROG="$ROOT/bin/ssclash"
-PIDFILE=/opt/var/run/ssclash.pid
+# tmpfs, so an unclean shutdown cannot leave a stale pid behind across reboots.
+PIDFILE=/var/run/ssclash.pid
+LEGACY_PIDFILE=/opt/var/run/ssclash.pid
 TLS_CERT="$ROOT/.ssclash/tls.crt"
 TLS_KEY="$ROOT/.ssclash/tls.key"
 
@@ -19,13 +24,43 @@ export SSCLASH_ROOT="$ROOT"
 # export SSCLASH_TLS_CERT="$TLS_CERT"
 # export SSCLASH_TLS_KEY="$TLS_KEY"
 
+# is_our_pid guards against PID reuse: after an unclean stop /proc/$pid can
+# exist but belong to whatever process inherited the number.
+is_our_pid() {
+	[ -n "$1" ] && [ -d "/proc/$1" ] && grep -q ssclash "/proc/$1/cmdline" 2>/dev/null
+}
+
+running_pid() {
+	# LEGACY_PIDFILE covers upgrades from the release that stored the pid on
+	# the USB mount, where the daemon predates the move to tmpfs.
+	for f in "$PIDFILE" "$LEGACY_PIDFILE"; do
+		[ -f "$f" ] || continue
+		pid="$(cat "$f" 2>/dev/null)"
+		if is_our_pid "$pid"; then
+			echo "$pid"
+			return 0
+		fi
+	done
+	# Pid file lost (tmpfs cleared, manual start): fall back to the process
+	# table so we never end up with two daemons fighting over the port.
+	for pid in $(pidof ssclash 2>/dev/null); do
+		echo "$pid"
+		return 0
+	done
+	return 1
+}
+
 start() {
-	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-		echo "ssclash already running (pid $(cat "$PIDFILE"))"
+	pid="$(running_pid)"
+	if [ -n "$pid" ]; then
+		echo "$DESC already running (pid $pid)"
+		echo "$pid" > "$PIDFILE"
+		rm -f "$LEGACY_PIDFILE"
 		return 0
 	fi
+	rm -f "$PIDFILE" "$LEGACY_PIDFILE"
 	mkdir -p "$(dirname "$PIDFILE")"
-	echo "Starting ssclash..."
+	echo "Starting $DESC..."
 	# Avoid EMFILE under dead-proxy/DNS connection storms (default soft nofile is often 1024).
 	ulimit -n 1048576 2>/dev/null || ulimit -n 65536 2>/dev/null || true
 	"$PROG" serve &
@@ -33,20 +68,34 @@ start() {
 }
 
 stop() {
-	echo "Stopping ssclash..."
-	if [ -f "$PIDFILE" ]; then
-		pid="$(cat "$PIDFILE")"
+	echo "Stopping $DESC..."
+	pid="$(running_pid)"
+	if [ -n "$pid" ]; then
 		kill -TERM "$pid" 2>/dev/null || true
 		i=0
 		while [ "$i" -lt 10 ]; do
-			kill -0 "$pid" 2>/dev/null || break
+			is_our_pid "$pid" || break
 			i=$((i + 1))
 			sleep 1
 		done
-		kill -KILL "$pid" 2>/dev/null || true
-		rm -f "$PIDFILE"
+		is_our_pid "$pid" && kill -KILL "$pid" 2>/dev/null
 	fi
+	# Anything the pid file did not cover, so "stopped" is actually true.
+	for rest in $(pidof ssclash 2>/dev/null); do
+		kill -TERM "$rest" 2>/dev/null || true
+	done
+	rm -f "$PIDFILE" "$LEGACY_PIDFILE"
 	"$PROG" cleanup 2>/dev/null || true
+}
+
+status() {
+	pid="$(running_pid)"
+	if [ -n "$pid" ]; then
+		echo "$DESC running (pid $pid)"
+		return 0
+	fi
+	echo "$DESC not running"
+	return 1
 }
 
 restart() {
@@ -59,5 +108,6 @@ case "$1" in
 	start) start ;;
 	stop) stop ;;
 	restart) restart ;;
-	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+	status) status ;;
+	*) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
 esac

@@ -39,7 +39,20 @@ CLASH_BIN="$ROOT/bin/clash"
 SETTINGS="$ROOT/.ssclash/settings"
 UI_PORT=9091
 INIT_DEST=/opt/etc/init.d/S99ssclash
-PIDFILE=/opt/var/run/ssclash.pid
+# tmpfs, matching S99ssclash: a stale pid must not survive a reboot.
+PIDFILE=/var/run/ssclash.pid
+LEGACY_PIDFILE=/opt/var/run/ssclash.pid
+
+# pidfile_alive reports whether either pid file points at a live ssclash.
+pidfile_alive() {
+	for _f in "$PIDFILE" "$LEGACY_PIDFILE"; do
+		[ -f "$_f" ] || continue
+		_p="$(cat "$_f" 2>/dev/null)"
+		[ -n "$_p" ] && [ -d "/proc/$_p" ] \
+			&& grep -q ssclash "/proc/$_p/cmdline" 2>/dev/null && return 0
+	done
+	return 1
+}
 
 FROM=""
 VERSION="latest"
@@ -132,7 +145,7 @@ install_bin() {
 
 stop_ssclash_for_upgrade() {
 	_running=0
-	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+	if pidfile_alive; then
 		_running=1
 	fi
 	pidof ssclash >/dev/null 2>&1 && _running=1
@@ -203,8 +216,7 @@ github_get() {
 	if github_get_once "$_url" "$_out"; then
 		return 0
 	fi
-	if pidof ssclash >/dev/null 2>&1 || pidof clash >/dev/null 2>&1 \
-		|| { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; }; then
+	if pidof ssclash >/dev/null 2>&1 || pidof clash >/dev/null 2>&1 || pidfile_alive; then
 		warn "GitHub request failed — stopping ssclash and retrying once..."
 		stop_ssclash_for_upgrade
 	else
@@ -627,13 +639,30 @@ check_netfilter_modules() {
 	if command -v lsmod >/dev/null 2>&1; then
 		lsmod 2>/dev/null | grep -qE 'nf_tables|xt_TPROXY|tproxy' || _ok=0
 	fi
-	for _m in nf_tables xt_TPROXY; do
-		modprobe "$_m" 2>/dev/null || true
+	# BusyBox modprobe often has no modules.dep on Entware, so fall back to
+	# insmod against the firmware module directory (same as the daemon does).
+	_krel="$(uname -r 2>/dev/null)"
+	for _m in nf_tables xt_TPROXY xt_mark xt_conntrack xt_multiport xt_owner xt_set xt_REDIRECT; do
+		grep -q "^${_m} " /proc/modules 2>/dev/null && continue
+		modprobe "$_m" 2>/dev/null && continue
+		[ -n "$_krel" ] && [ -f "/lib/modules/${_krel}/${_m}.ko" ] \
+			&& insmod "/lib/modules/${_krel}/${_m}.ko" 2>/dev/null || true
 	done
 	if [ "$_ok" = 0 ]; then
 		warn "Netfilter kernel modules not loaded"
 		warn "Enable 'Netfilter subsystem kernel modules' in Keenetic Components, then reboot"
 	fi
+}
+
+# check_iproute2 verifies the ip binary can do policy routing. BusyBox handles
+# addr/route but is often built without rule support, which would leave marked
+# packets on the main table with no visible error.
+check_iproute2() {
+	if ip rule show >/dev/null 2>&1; then
+		return 0
+	fi
+	warn "'ip rule' is not supported by the ip binary in PATH — policy routing will not work"
+	warn "Install the full iproute2: opkg install ip-full"
 }
 
 # pick_lan_ipv4 prefers RFC1918 from global addresses (avoids WAN/KeenDNS in hints).
@@ -656,7 +685,7 @@ start_service() {
 	if [ ! -x "$INIT_DEST" ]; then
 		return 0
 	fi
-	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+	if pidfile_alive; then
 		"$INIT_DEST" restart >/dev/null 2>&1 \
 			|| warn "service restart failed — run: $INIT_DEST start"
 	else
@@ -673,6 +702,7 @@ lan_ip() {
 say "SSClash-Go installer (Keenetic / Entware)"
 ensure_fetcher
 check_netfilter_modules
+check_iproute2
 detect_arch
 fetch_ssclash_release
 install_ssclash
