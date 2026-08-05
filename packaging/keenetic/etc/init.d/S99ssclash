@@ -10,7 +10,6 @@ ROOT=/opt/clash
 PROG="$ROOT/bin/ssclash"
 # tmpfs, so an unclean shutdown cannot leave a stale pid behind across reboots.
 PIDFILE=/var/run/ssclash.pid
-LEGACY_PIDFILE=/opt/var/run/ssclash.pid
 TLS_CERT="$ROOT/.ssclash/tls.crt"
 TLS_KEY="$ROOT/.ssclash/tls.key"
 
@@ -31,16 +30,13 @@ is_our_pid() {
 }
 
 running_pid() {
-	# LEGACY_PIDFILE covers upgrades from the release that stored the pid on
-	# the USB mount, where the daemon predates the move to tmpfs.
-	for f in "$PIDFILE" "$LEGACY_PIDFILE"; do
-		[ -f "$f" ] || continue
-		pid="$(cat "$f" 2>/dev/null)"
+	if [ -f "$PIDFILE" ]; then
+		pid="$(cat "$PIDFILE" 2>/dev/null)"
 		if is_our_pid "$pid"; then
 			echo "$pid"
 			return 0
 		fi
-	done
+	fi
 	# Pid file lost (tmpfs cleared, manual start): fall back to the process
 	# table so we never end up with two daemons fighting over the port.
 	for pid in $(pidof ssclash 2>/dev/null); do
@@ -55,10 +51,9 @@ start() {
 	if [ -n "$pid" ]; then
 		echo "$DESC already running (pid $pid)"
 		echo "$pid" > "$PIDFILE"
-		rm -f "$LEGACY_PIDFILE"
 		return 0
 	fi
-	rm -f "$PIDFILE" "$LEGACY_PIDFILE"
+	rm -f "$PIDFILE"
 	mkdir -p "$(dirname "$PIDFILE")"
 	echo "Starting $DESC..."
 	# Avoid EMFILE under dead-proxy/DNS connection storms (default soft nofile is often 1024).
@@ -84,7 +79,7 @@ stop() {
 	for rest in $(pidof ssclash 2>/dev/null); do
 		kill -TERM "$rest" 2>/dev/null || true
 	done
-	rm -f "$PIDFILE" "$LEGACY_PIDFILE"
+	rm -f "$PIDFILE"
 	"$PROG" cleanup 2>/dev/null || true
 }
 

@@ -44,7 +44,11 @@ detect_platform() {
 
 ssclash_is_running() {
 	pidof ssclash >/dev/null 2>&1 && return 0
-	[ -f /opt/var/run/ssclash.pid ] && kill -0 "$(cat /opt/var/run/ssclash.pid 2>/dev/null)" 2>/dev/null && return 0
+	if [ -f /var/run/ssclash.pid ]; then
+		_p="$(cat /var/run/ssclash.pid 2>/dev/null)"
+		[ -n "$_p" ] && [ -d "/proc/$_p" ] \
+			&& grep -q ssclash "/proc/$_p/cmdline" 2>/dev/null && return 0
+	fi
 	command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet ssclash.service 2>/dev/null && return 0
 	return 1
 }

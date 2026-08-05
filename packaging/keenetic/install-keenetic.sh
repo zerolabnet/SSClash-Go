@@ -41,17 +41,13 @@ UI_PORT=9091
 INIT_DEST=/opt/etc/init.d/S99ssclash
 # tmpfs, matching S99ssclash: a stale pid must not survive a reboot.
 PIDFILE=/var/run/ssclash.pid
-LEGACY_PIDFILE=/opt/var/run/ssclash.pid
 
-# pidfile_alive reports whether either pid file points at a live ssclash.
+# pidfile_alive reports whether the pid file points at a live ssclash.
 pidfile_alive() {
-	for _f in "$PIDFILE" "$LEGACY_PIDFILE"; do
-		[ -f "$_f" ] || continue
-		_p="$(cat "$_f" 2>/dev/null)"
-		[ -n "$_p" ] && [ -d "/proc/$_p" ] \
-			&& grep -q ssclash "/proc/$_p/cmdline" 2>/dev/null && return 0
-	done
-	return 1
+	[ -f "$PIDFILE" ] || return 1
+	_p="$(cat "$PIDFILE" 2>/dev/null)"
+	[ -n "$_p" ] && [ -d "/proc/$_p" ] \
+		&& grep -q ssclash "/proc/$_p/cmdline" 2>/dev/null
 }
 
 FROM=""
@@ -562,7 +558,7 @@ install_init_from_raw() {
 	_tmp="/tmp/ssclash-init.$$"
 	say "fetching S99ssclash from repository..."
 	if github_get "$_url" "$_tmp" && [ -s "$_tmp" ]; then
-		mkdir -p /opt/etc/init.d /opt/var/run
+		mkdir -p /opt/etc/init.d
 		install_file "$_tmp" "$INIT_DEST" 755
 		rm -f "$_tmp"
 		return 0
@@ -574,7 +570,7 @@ install_init_from_raw() {
 install_init() {
 	SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 	SRC="$SCRIPT_DIR/etc/init.d/S99ssclash"
-	mkdir -p /opt/etc/init.d /opt/var/run
+	mkdir -p /opt/etc/init.d
 	if [ -f "$SRC" ]; then
 		install_file "$SRC" "$INIT_DEST" 755
 		say "installed Entware init -> $INIT_DEST"
