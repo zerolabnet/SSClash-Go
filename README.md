@@ -243,6 +243,7 @@ SSClash offers two interface processing modes:
 ### Additional settings
 
 - **Block QUIC traffic** — blocks UDP/443 to improve proxy effectiveness (YouTube, etc.)
+- **Port filter (firewall)** — destination TCP/UDP ports handled in netfilter *before* Mihomo (Settings → Options). **Bypass** never enters the core (e.g. fixed BitTorrent listen ports). **Proxy-only** (when non-empty) marks only listed ports — useful on weak routers so random torrent peers never enter the core. Empty lists keep the previous “all ports” behaviour. This is not the same as Mihomo `DST-PORT` rules.
 - **Store rules and proxy providers in RAM** — symlinks `rule-providers/` and `proxy-providers/` to tmpfs to reduce NAND wear
 - **Add HWID headers to subscriptions** — Remnawave-compatible 16-character HWID on proxy-provider requests
 - **Backup / restore** — export or import `.ssclash/` settings and lists from the Settings page
