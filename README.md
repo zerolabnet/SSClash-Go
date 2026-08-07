@@ -245,7 +245,7 @@ SSClash offers two interface processing modes:
 - **Block QUIC traffic** — blocks UDP/443 to improve proxy effectiveness (YouTube, etc.)
 - **Port filter (firewall)** — destination TCP/UDP ports handled in netfilter *before* Mihomo (Settings → Options). **Bypass** never enters the core (e.g. fixed BitTorrent listen ports). **Proxy-only** (when non-empty) marks only listed ports — useful on weak routers so random torrent peers never enter the core. Empty lists keep the previous “all ports” behaviour. This is not the same as Mihomo `DST-PORT` rules.
 - **Store rules and proxy providers in RAM** — symlinks `rule-providers/` and `proxy-providers/` to tmpfs to reduce NAND wear
-- **Add HWID headers to subscriptions** — Remnawave-compatible 16-character HWID on proxy-provider requests
+- **Add HWID headers to subscriptions** — Remnawave-compatible 16-character HWID on proxy-provider requests (also used when fetching a remote full config URL)
 - **Backup / restore** — export or import `.ssclash/` settings and lists from the Settings page
 - **Web UI port and TLS** — set via install flags or `SSCLASH_ADDR` / `SSCLASH_TLS_*` in the init script or systemd unit
 
@@ -264,6 +264,7 @@ Edit `config.yaml` in the built-in ACE editor:
 - **Syntax highlighting** for YAML
 - **Live service control** — Start / Stop / Restart in the toolbar
 - **Named profiles** — save and switch configs under `configs/`
+- **Load from URL** (optional) — download a full Mihomo YAML into profile `remote` (Remnawave `/sub/{token}` falls back to `/mihomo`). Auto-update can follow the provider’s `Profile-Update-Interval` or a fixed custom interval (1–168h); **Save settings** changes URL/auto/interval without re-downloading; **Stop remote source** clears the subscription while keeping profile `remote` as a local copy. Independent of proxy-provider refresh. Empty URL keeps local-only behaviour.
 - **Subscription disable/enable** — comment out proxy-provider blocks without deleting them
 - **Open Dashboard** — opens the Mihomo external UI (see Step 9)
 
