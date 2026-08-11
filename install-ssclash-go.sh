@@ -105,7 +105,8 @@ fetch_url_once() {
 		fi
 	fi
 	if command -v wget >/dev/null 2>&1; then
-		if wget -T "$_max" -t 3 -qO "$_out" "$_url" 2>/dev/null \
+		# No -t: OpenWrt stock wget is often uclient-fetch and rejects GNU-only flags.
+		if wget -T "$_max" -qO "$_out" "$_url" 2>/dev/null \
 			&& [ -s "$_out" ]; then
 			return 0
 		fi
@@ -113,27 +114,68 @@ fetch_url_once() {
 	return 1
 }
 
+# OpenWrt ships uclient-fetch as wget; GitHub HTTPS is more reliable with wget-ssl
+# (or curl) plus ca-bundle. opkg mirrors usually still work so this can self-heal.
+ensure_openwrt_https_tools() {
+	[ -f /etc/openwrt_release ] || return 1
+	say "ensuring OpenWrt HTTPS tools (ca-bundle, wget-ssl)..."
+	if command -v opkg >/dev/null 2>&1; then
+		opkg update >/dev/null 2>&1 || warn "opkg update failed (continuing)"
+		opkg install ca-bundle >/dev/null 2>&1 || true
+		if opkg install wget-ssl >/dev/null 2>&1; then
+			say "wget-ssl installed"
+			return 0
+		fi
+		if opkg install curl >/dev/null 2>&1; then
+			say "curl installed"
+			return 0
+		fi
+	elif command -v apk >/dev/null 2>&1; then
+		apk update >/dev/null 2>&1 || warn "apk update failed (continuing)"
+		if apk add ca-bundle wget-ssl >/dev/null 2>&1; then
+			say "wget-ssl installed"
+			return 0
+		fi
+		if apk add ca-bundle curl >/dev/null 2>&1; then
+			say "curl installed"
+			return 0
+		fi
+	fi
+	warn "could not install wget-ssl/curl automatically"
+	return 1
+}
+
 fetch_url() {
 	_url="$1"
 	_out="$2"
+	_plat="${3:-}"
 	if fetch_url_once "$_url" "$_out"; then
 		return 0
 	fi
-	warn "download failed — stopping ssclash (if running) and retrying once..."
+	warn "download failed - stopping ssclash (if running) and retrying once..."
 	stop_ssclash_if_running
-	fetch_url_once "$_url" "$_out"
-	return $?
+	if fetch_url_once "$_url" "$_out"; then
+		return 0
+	fi
+	if [ "$_plat" = "openwrt" ]; then
+		warn "download still failing - installing wget-ssl/ca-bundle and retrying..."
+		ensure_openwrt_https_tools || true
+		fetch_url_once "$_url" "$_out"
+		return $?
+	fi
+	return 1
 }
 
 fetch_installer() {
 	_out="$1"
 	_path="$2"
+	_plat="$3"
 	_url="${GITHUB_RAW}/${_path}"
 	say "fetching ${_path}..."
-	if fetch_url "$_url" "$_out"; then
+	if fetch_url "$_url" "$_out" "$_plat"; then
 		return 0
 	fi
-	die "download failed: ${_url} (check DNS/HTTPS: nslookup github.com; install ca-bundle if needed)"
+	die "download failed: ${_url} (check DNS/HTTPS: nslookup github.com; on OpenWrt: opkg update && opkg install ca-bundle wget-ssl)"
 }
 
 verify_installer() {
@@ -158,7 +200,7 @@ TMP="$(mktemp)"
 cleanup() { rm -f "$TMP"; }
 trap cleanup EXIT INT HUP TERM
 
-fetch_installer "$TMP" "$subpath"
+fetch_installer "$TMP" "$subpath" "$platform"
 verify_installer "$TMP"
 
 exec sh "$TMP" "$@"

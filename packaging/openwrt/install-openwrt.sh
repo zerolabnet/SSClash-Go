@@ -176,11 +176,12 @@ github_get_once() {
 		fi
 	fi
 	if command -v wget >/dev/null 2>&1; then
+		# No -t: stock OpenWrt wget is often uclient-fetch (rejects GNU-only flags).
 		if [ -n "$_out" ]; then
-			wget -T "$_max" -t 3 -qO "$_out" "$_url" 2>/dev/null \
+			wget -T "$_max" -qO "$_out" "$_url" 2>/dev/null \
 				&& [ -s "$_out" ] && return 0
 		else
-			wget -T "$_max" -t 3 -qO- "$_url" 2>/dev/null \
+			wget -T "$_max" -qO- "$_url" 2>/dev/null \
 				&& return 0
 		fi
 	fi
@@ -191,7 +192,7 @@ github_fail_hint() {
 	warn "Could not reach GitHub (DNS/network)."
 	warn "Downloads run while SSClash is still up — if it routes your traffic, do not stop it manually first."
 	warn "Check: nslookup api.github.com   or   wget -qO- https://api.github.com/zen"
-	warn "If HTTPS fails, install CA bundle: apk add ca-bundle  /  opkg install ca-bundle"
+	warn "If HTTPS fails: opkg update && opkg install ca-bundle wget-ssl   (or: apk add ca-bundle wget-ssl)"
 }
 
 github_get() {
@@ -355,22 +356,48 @@ configure_openwrt_init() {
 	fi
 }
 
-# ---- 0. curl or wget (needed for GitHub API + downloads) --------------------
+# True when /usr/bin/wget is uclient-fetch/BusyBox (HTTPS often weak vs wget-ssl).
+wget_is_limited() {
+	command -v wget >/dev/null 2>&1 || return 0
+	_w=$(command -v wget)
+	_t=$(readlink -f "$_w" 2>/dev/null || readlink "$_w" 2>/dev/null || echo "$_w")
+	case "$_t" in
+		*uclient*|*busybox*) return 0 ;;
+	esac
+	# GNU wget-ssl installs as alternatives → /usr/libexec/wget-ssl
+	[ -x /usr/libexec/wget-ssl ] && return 1
+	return 1
+}
+
+# ---- 0. curl or HTTPS-capable wget (needed for GitHub API + downloads) -------
 ensure_fetcher() {
-	if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
+	if command -v curl >/dev/null 2>&1; then
 		return 0
 	fi
-	warn "neither curl nor wget found — installing curl..."
-	if [ "$PKG_MGR" = "apk" ]; then
-		apk update || die "apk update failed"
-		apk add curl || die "failed to install curl"
-	else
-		opkg update || die "opkg update failed"
-		opkg install curl || die "failed to install curl"
+	if command -v wget >/dev/null 2>&1 && ! wget_is_limited; then
+		return 0
 	fi
-	command -v curl >/dev/null 2>&1 || die "curl still unavailable after install"
-	PKG_UPDATED=1
-	say "curl installed"
+	if command -v wget >/dev/null 2>&1 && wget_is_limited; then
+		warn "stock wget looks like uclient-fetch/BusyBox — installing wget-ssl for GitHub HTTPS..."
+	else
+		warn "neither curl nor wget found — installing wget-ssl (or curl)..."
+	fi
+	pkg_update
+	if [ "$PKG_MGR" = "apk" ]; then
+		apk add ca-bundle wget-ssl 2>/dev/null \
+			|| apk add ca-bundle curl 2>/dev/null \
+			|| die "failed to install wget-ssl/curl"
+	else
+		opkg install ca-bundle >/dev/null 2>&1 || true
+		opkg install wget-ssl 2>/dev/null \
+			|| opkg install curl 2>/dev/null \
+			|| die "failed to install wget-ssl/curl"
+	fi
+	if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
+		say "HTTPS fetch tool ready"
+		return 0
+	fi
+	die "curl/wget still unavailable after install"
 }
 
 # ---- 1. OpenWrt version + package manager -----------------------------------
@@ -483,7 +510,8 @@ pkg_update() {
 
 # ---- 4. Dependencies --------------------------------------------------------
 install_deps() {
-	DEPS="$TPROXY_PKG kmod-tun ca-bundle"
+	# wget-ssl: stock OpenWrt wget is often uclient-fetch; GitHub HTTPS needs real SSL wget.
+	DEPS="$TPROXY_PKG kmod-tun ca-bundle wget-ssl"
 	if [ "$TPROXY_PKG" = "iptables-mod-tproxy" ]; then
 		DEPS="$DEPS ipset"
 	fi
