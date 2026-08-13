@@ -76,9 +76,11 @@ SSClash **stops itself** before upgrade when the service is already running (so 
 curl -fsSL https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | sudo sh
 ```
 
-**Keenetic** (Entware over SSH as root):
+**Keenetic** (Entware over SSH as root). Firmware BusyBox `wget` has no HTTPS (often segfaults / `not an http or ftp url`). Install Entware `wget-ssl` first:
 
 ```bash
+opkg update && opkg install wget-ssl ca-certificates
+export PATH="/opt/bin:/opt/sbin:$PATH"
 wget -T 30 -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash
 ```
 
@@ -185,6 +187,8 @@ built without `rule` support. The installer checks this and tells you to run
 `opkg install ip-full` when needed.
 
 ```bash
+opkg update && opkg install wget-ssl ca-certificates
+export PATH="/opt/bin:/opt/sbin:$PATH"
 wget -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash
 ```
 

@@ -76,9 +76,11 @@ wget -T 30 -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/ins
 curl -fsSL https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | sudo sh
 ```
 
-**Keenetic** (Entware по SSH от root):
+**Keenetic** (Entware по SSH от root). Встроенный BusyBox `wget` без HTTPS (часто segfault / `not an http or ftp url`). Сначала поставьте Entware `wget-ssl`:
 
 ```bash
+opkg update && opkg install wget-ssl ca-certificates
+export PATH="/opt/bin:/opt/sbin:$PATH"
 wget -T 30 -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash
 ```
 
@@ -185,6 +187,8 @@ curl -fsSL https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-
 подскажет выполнить `opkg install ip-full`.
 
 ```bash
+opkg update && opkg install wget-ssl ca-certificates
+export PATH="/opt/bin:/opt/sbin:$PATH"
 wget -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash
 ```
 
