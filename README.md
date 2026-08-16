@@ -192,7 +192,7 @@ export PATH="/opt/bin:/opt/sbin:$PATH"
 wget -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash
 ```
 
-Default: TPROXY + Exclude mode, NAT masquerade on WAN, **Auto fake-ip whitelist** enabled.
+Default: TPROXY + Exclude mode, **Auto fake-ip whitelist** enabled. NAT is handled by KeeneticOS.
 DNS defaults to ndmc upstream (`127.0.0.1:7874`) in Settings — on some firmware
 ndmc may reject a non-standard port; if DNS interception fails, enable
 **Firewall redirect** in Settings instead (or configure DNS manually).

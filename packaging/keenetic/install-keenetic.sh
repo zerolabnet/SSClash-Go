@@ -623,7 +623,6 @@ write_settings() {
 	}
 	set_default OPERATING_MODE gateway
 	set_default PROXY_MODE tproxy
-	set_default ENABLE_NAT_MASQUERADE true
 	set_default ENABLE_DNS_UPSTREAM true
 	set_default ENABLE_DNS_REDIRECT false
 	# Applies only after config.yaml uses fake-ip-filter-mode whitelist/rule.
@@ -633,12 +632,12 @@ write_settings() {
 check_netfilter_modules() {
 	_ok=1
 	if command -v lsmod >/dev/null 2>&1; then
-		lsmod 2>/dev/null | grep -qE 'nf_tables|xt_TPROXY|tproxy' || _ok=0
+		lsmod 2>/dev/null | grep -qE 'xt_TPROXY|tproxy|xt_mark' || _ok=0
 	fi
 	# BusyBox modprobe often has no modules.dep on Entware, so fall back to
 	# insmod against the firmware module directory (same as the daemon does).
 	_krel="$(uname -r 2>/dev/null)"
-	for _m in nf_tables xt_TPROXY xt_mark xt_conntrack xt_multiport xt_owner xt_set xt_REDIRECT; do
+	for _m in xt_TPROXY xt_mark xt_conntrack xt_multiport xt_owner xt_set xt_REDIRECT; do
 		grep -q "^${_m} " /proc/modules 2>/dev/null && continue
 		modprobe "$_m" 2>/dev/null && continue
 		[ -n "$_krel" ] && [ -f "/lib/modules/${_krel}/${_m}.ko" ] \
@@ -727,12 +726,12 @@ cat <<EOF
    - USB / Entware / OPKG — working
 
  Defaults written only if missing in $SETTINGS:
-   PROXY_MODE=tproxy, ENABLE_NAT_MASQUERADE=true, AUTO_FAKEIP_WHITELIST=true
+   PROXY_MODE=tproxy, AUTO_FAKEIP_WHITELIST=true
    (AUTO_FAKEIP_WHITELIST applies only when config.yaml uses fake-ip whitelist)
 
  1. Open web UI:  ${SCHEME}://${UI_HOST}:${UI_P}
     Set the admin password on first visit.
- 2. Settings — rescan interfaces, confirm LAN/WAN and NAT masquerade.
+ 2. Settings — rescan interfaces, confirm LAN/WAN.
     DNS is configured automatically at Start (see README Keenetic DNS table).
  3. Configuration — subscriptions/proxies, press Start.
 
