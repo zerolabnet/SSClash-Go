@@ -23,7 +23,7 @@ while keeping the same `/opt/clash` layout and feature set.
 - **Native firewall engine**: atomic `nft -f -` ruleset (`table inet clash`) or iptables/ipset fallback; **TPROXY / HYBRID / TUN / MIXED** modes; exclude/explicit interface model; QUIC blocking; reserved destination networks; port filter; per-client source bypass; fake-ip whitelist optimisation; subscription server-IP bypass.
 - **Policy routing** via `ip rule`/`ip route` (tables `100`/`101`, fwmarks `0x1`/`0x2`/`0x3`).
 - **Secure by default**: first-run admin password (PBKDF2-HMAC-SHA256), HMAC session cookies, CSRF protection, optional HTTPS.
-- **Platform support**: OpenWrt and generic Linux (systemd). Keenetic (Entware) is included but **has not been tested by the author**.
+- **Platform support**: OpenWrt, generic Linux (systemd), and Keenetic (Entware).
 
 ## Directory layout
 
@@ -177,12 +177,9 @@ Gateway mode applies firewall, policy routing and DNS redirect when you press **
 
 ## Manual install — Keenetic
 
-> **Note:** Keenetic/Entware support is provided as-is and **has not been tested
-> by the author**.
-
 Install Entware on USB first. Enable **Open packages**, **Ext file system**, **Netfilter kernel modules** in Keenetic web UI → Components (reboot after enabling Netfilter — that component is what provides firmware `iptables` / `xt_TPROXY`). Stock Keenetic without it has no userspace iptables; `opkg install iptables-legacy` is only a fallback. NDMS is **not** a TPROXY API: it rebuilds `filter`/`nat`/`mangle` and drops jumps into custom chains. The supported integration is Keenetic's official [`/opt/etc/ndm/netfilter.d`](https://support.keenetic.com/hero/kn-1012/en/42407-opkg-component-description.html) hook, which restores those jumps with firmware iptables (24-second timeout — the hook does not re-run a full Apply).
 
-**Network accelerator (PPE/HWNAT):** if it stays on, packets bypass netfilter. Rules look applied, packet counters stay at 0, Mihomo **Connections** stay empty in every proxy mode. SSClash disables PPE while the proxy runs (`ndmc no ppe`, not written to NVRAM) and restores it on Stop. You can also turn it off in **General system settings → Performance**. WAN speed (and on some models LAN↔Wi-Fi) may drop — that is required for any netfilter proxy on Keenetic.
+**Network accelerator (PPE/HWNAT):** when enabled, packets can bypass netfilter — rules look applied but **Connections** stay empty. Turn it off in **General system settings → Performance** if that happens. SSClash does not manage PPE.
 
 Policy routing needs the full iproute2 binary; BusyBox's `ip` applet is often
 built without `rule` support. The installer runs `opkg install ip-full` when `ip rule` fails.

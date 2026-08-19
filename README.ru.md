@@ -23,7 +23,7 @@
 - **Собственный движок файрвола**: атомарный ruleset `nft -f -` (`table inet clash`) или fallback iptables/ipset; режимы **TPROXY / HYBRID / TUN / MIXED**; модели exclude/explicit; блокировка QUIC; зарезервированные сети назначения; фильтр портов; обход LAN-клиентов; оптимизация fake-ip whitelist; обход IP серверов подписок.
 - **Policy routing** через `ip rule`/`ip route` (таблицы `100`/`101`, метки `0x1`/`0x2`/`0x3`).
 - **Безопасность по умолчанию**: пароль администратора при первом запуске (PBKDF2-HMAC-SHA256), HMAC-сессии, защита CSRF, опциональный HTTPS.
-- **Платформы**: OpenWrt и обычный Linux (systemd). Keenetic (Entware) поддерживается, но **автором не тестировался**.
+- **Платформы**: OpenWrt, обычный Linux (systemd) и Keenetic (Entware).
 
 ## Структура каталогов
 
@@ -177,12 +177,9 @@ curl -fsSL https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-
 
 ## Ручная установка — Keenetic
 
-> **Примечание:** поддержка Keenetic/Entware предоставляется as-is и **автором не
-> тестировалась**.
-
 Сначала установите Entware на USB. В веб-UI Keenetic → Компоненты включите **Open packages**, **Ext file system**, **Netfilter kernel modules** (после включения Netfilter — перезагрузка: этот компонент даёт штатный `iptables` / `xt_TPROXY`). Без него в стоковой прошивке нет userspace iptables; `opkg install iptables-legacy` — только запасной вариант. NDMS **не** API для TPROXY: он пересобирает `filter`/`nat`/`mangle` и сносит jump’ы в чужие цепочки. Официальная интеграция — хук [`/opt/etc/ndm/netfilter.d`](https://support.keenetic.com/hero/kn-1012/en/42407-opkg-component-description.html), который восстанавливает jump’ы через firmware iptables (таймаут 24 с — хук не делает полный Apply).
 
-**Сетевой ускоритель (PPE/HWNAT):** если он включён, пакеты обходят netfilter. Правила «применяются», счётчики остаются нулевыми, в **Connections** пусто во всех режимах. SSClash выключает PPE на время работы прокси (`ndmc no ppe`, без записи в NVRAM) и возвращает на Stop. Можно выключить вручную: **Общие настройки → Производительность**. Скорость WAN (и на части моделей LAN↔Wi-Fi) может упасть — это плата за любой netfilter-прокси на Keenetic.
+**Сетевой ускоритель (PPE/HWNAT):** если включён, пакеты могут обходить netfilter — правила «есть», а **Connections** пусто. Выключите в **Общие настройки → Производительность**, если так. SSClash PPE не трогает.
 
 Для policy routing нужен полноценный iproute2: апплет `ip` из BusyBox часто
 собран без поддержки `rule`. Инсталлятор ставит `opkg install ip-full`, если `ip rule` не работает.

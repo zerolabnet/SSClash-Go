@@ -5,7 +5,6 @@
 #   - Open packages support
 #   - Ext file system (USB drive formatted ext4, mounted with OPKG access)
 #   - Netfilter subsystem kernel modules (reboot after enabling)
-#   - Network accelerator: SSClash disables PPE while the proxy runs
 #   - USB drive with Entware installed (see Keenetic OPKG guide)
 #
 # Run over SSH as root (Entware port 222 or system port 22):
@@ -732,20 +731,6 @@ ensure_ip_full() {
 	warn "Install the full iproute2: opkg install ip-full"
 }
 
-# check_ppe warns when the hardware/software network accelerator is on.
-# PPE/HWNAT bypasses netfilter, so SSClash rules can look applied with empty Connections.
-check_ppe() {
-	_ndmc=""
-	for _p in /bin/ndmc /usr/sbin/ndmc /sbin/ndmc; do
-		[ -x "$_p" ] && _ndmc="$_p" && break
-	done
-	[ -n "$_ndmc" ] || return 0
-	_out="$("$_ndmc" -c "show ppe" 2>/dev/null || true)"
-	echo "$_out" | grep -qiE 'hardware:[[:space:]]*(enabled|on)|software:[[:space:]]*(enabled|on)' || return 0
-	warn "Keenetic network accelerator (PPE/HWNAT) is enabled — netfilter/TPROXY will not see LAN traffic"
-	warn "SSClash disables it while the proxy runs (Settings), or turn it off in General system settings → Performance"
-}
-
 # pick_lan_ipv4 prefers RFC1918 from global addresses (avoids WAN/KeenDNS in hints).
 pick_lan_ipv4() {
 	_first=""
@@ -785,7 +770,6 @@ ensure_fetcher
 check_netfilter_modules
 ensure_iptables_userspace
 ensure_ip_full
-check_ppe
 detect_arch
 fetch_ssclash_release
 install_ssclash
@@ -812,8 +796,6 @@ cat <<EOF
  Before first Start, verify in Keenetic web UI (Components):
    - Netfilter subsystem kernel modules — enabled (reboot after enabling)
    - USB / Entware / OPKG — working
-   - Network accelerator off while the proxy runs (Settings default), or
-     General system settings → Performance
    - ip-full if `ip rule` fails (installer tries opkg install ip-full)
    - iptables -V must NOT say nf_tables (use firmware iptables or
      opkg install iptables-legacy)
