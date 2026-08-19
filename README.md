@@ -20,7 +20,7 @@ while keeping the same `/opt/clash` layout and feature set.
 - **One binary, every architecture.** Pre-built static binaries for amd64, arm64, armv5/6/7, 386, loong64, riscv64, ppc64le, s390x and mips/mipsle variants. The web UI is embedded in the daemon.
 - **Embedded web UI** — **Configuration**, **Settings**, **Rule Lists**, built-in **Proxies / Connections / Rules / Core Logs** dashboard, and **System Log** — with YAML editing, service control, interface/kernel management and live streams.
 - **External Mihomo core**, fully managed: download/update from GitHub releases (arch auto-detected), start/stop/restart, `clash -t` validation and hot reload via the Mihomo API.
-- **Native firewall engine**: atomic `nft -f -` ruleset (`table inet clash`) or iptables/ipset fallback; **TPROXY / TUN / MIXED** modes; exclude/explicit interface model; QUIC blocking; reserved destination networks; port filter; per-client source bypass; fake-ip whitelist optimisation; subscription server-IP bypass.
+- **Native firewall engine**: atomic `nft -f -` ruleset (`table inet clash`) or iptables/ipset fallback; **TPROXY / HYBRID / TUN / MIXED** modes; exclude/explicit interface model; QUIC blocking; reserved destination networks; port filter; per-client source bypass; fake-ip whitelist optimisation; subscription server-IP bypass.
 - **Policy routing** via `ip rule`/`ip route` (tables `100`/`101`, fwmarks `0x1`/`0x2`/`0x3`).
 - **Secure by default**: first-run admin password (PBKDF2-HMAC-SHA256), HMAC session cookies, CSRF protection, optional HTTPS.
 - **Platform support**: OpenWrt and generic Linux (systemd). Keenetic (Entware) is included but **has not been tested by the author**.
@@ -180,11 +180,12 @@ Gateway mode applies firewall, policy routing and DNS redirect when you press **
 > **Note:** Keenetic/Entware support is provided as-is and **has not been tested
 > by the author**.
 
-Install Entware on USB first. Enable **Open packages**, **Ext file system**, **Netfilter kernel modules** in Keenetic web UI → Components.
+Install Entware on USB first. Enable **Open packages**, **Ext file system**, **Netfilter kernel modules** in Keenetic web UI → Components (reboot after enabling Netfilter — that component is what provides firmware `iptables` / `xt_TPROXY`). Stock Keenetic without it has no userspace iptables; `opkg install iptables-legacy` is only a fallback. NDMS is **not** a TPROXY API: it rebuilds `filter`/`nat`/`mangle` and drops jumps into custom chains. The supported integration is Keenetic's official [`/opt/etc/ndm/netfilter.d`](https://support.keenetic.com/hero/kn-1012/en/42407-opkg-component-description.html) hook, which restores those jumps with firmware iptables (24-second timeout — the hook does not re-run a full Apply).
+
+**Network accelerator (PPE/HWNAT):** if it stays on, packets bypass netfilter. Rules look applied, packet counters stay at 0, Mihomo **Connections** stay empty in every proxy mode. SSClash disables PPE while the proxy runs (`ndmc no ppe`, not written to NVRAM) and restores it on Stop. You can also turn it off in **General system settings → Performance**. WAN speed (and on some models LAN↔Wi-Fi) may drop — that is required for any netfilter proxy on Keenetic.
 
 Policy routing needs the full iproute2 binary; BusyBox's `ip` applet is often
-built without `rule` support. The installer checks this and tells you to run
-`opkg install ip-full` when needed.
+built without `rule` support. The installer runs `opkg install ip-full` when `ip rule` fails.
 
 ```bash
 opkg update && opkg install wget-ssl ca-certificates
@@ -192,17 +193,60 @@ export PATH="/opt/bin:/opt/sbin:$PATH"
 wget -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash
 ```
 
-Default: TPROXY + Exclude mode, **Auto fake-ip whitelist** enabled. NAT is handled by KeeneticOS.
-DNS defaults to ndmc upstream (`127.0.0.1:7874`) in Settings — on some firmware
-ndmc may reject a non-standard port; if DNS interception fails, enable
-**Firewall redirect** in Settings instead (or configure DNS manually).
+Default: **HYBRID** + Exclude mode, **Auto fake-ip whitelist** enabled. NAT is handled by KeeneticOS.
+DNS interception defaults to **Firewall redirect** in Settings (LAN port 53 → Mihomo).
+Clients should use the router as DNS (Keenetic DHCP).
 
 KeeneticOS rebuilds netfilter on configuration save, WAN reconnect and component
-changes, which drops the jumps into the SSClash chains. To survive that, Start
-installs an NDMS hook at `/opt/etc/ndm/netfilter.d/50-ssclash.sh` that verifies
-the ruleset after every rebuild and re-applies it when needed. Stop removes the
-hook. Since Keenetic's netfilter stack is iptables-based, the iptables backend is
-selected automatically even when the Entware `nftables` package is installed.
+changes, which drops the jumps into the SSClash chains. Start installs an NDMS
+hook at `/opt/etc/ndm/netfilter.d/50-ssclash.sh` that re-inserts `PREROUTING -j CLASH`
+(and DNS/QUIC rules) with `/sbin/iptables`. A full daemon reload runs only if the
+custom chains themselves are gone. Stop removes the hook.
+
+**Firewall backend on Keenetic** is fixed to firmware **iptables** (xtables). Settings
+does not offer Auto or nftables. The installer seeds `FIREWALL_BACKEND=iptables`;
+Save/API normalize any other value to iptables. Auto would also resolve to iptables
+at runtime, but forced nft is refused at Apply. Entware `iptables-nft` (`nf_tables`)
+cannot intercept Keenetic LAN forwarding — the installer installs `iptables-legacy`
+when no xtables CLI is present. Prefer the firmware tool from **Netfilter subsystem
+kernel modules**. In **TUN** mode Mihomo starts with `DISABLE_NFTABLES=1` so its
+`auto-redirect` uses iptables too (same reason as SSClash).
+
+**Recommended proxy modes on Keenetic (in order):** **HYBRID** (installer default — SSClash
+nat DNAT + TPROXY, all Options features, works with router HTTPS on 443), **TPROXY**
+(if you move router management HTTPS off TCP 443, e.g. 8443), **TUN** last (Mihomo
+auto-route/redirect — SSClash bypass/policy Options are limited).
+
+**Keenetic access policy (HYBRID / TPROXY / MIXED):** Settings → **Respect Keenetic access
+policy** — select policies from the router (Internet → Access policies). SSClash matches
+NDMS connmarks in firewall rules so only devices assigned to those policies enter the
+proxy path. Unavailable in **TUN** (Mihomo owns capture there).
+
+**TPROXY on Keenetic and TCP 443:** KeeneticOS uses port 443 internally for `xt_TPROXY`;
+LAN TCP to `:443` often never reaches SSClash (TPROXY counters stay at zero). Use **HYBRID**
+(default), move router HTTPS to another port (e.g. `8443` — `sh install-keenetic.sh --port 8443`),
+or use **TUN**.
+
+**Keenetic TUN vs OpenWrt/Linux TUN:** on Keenetic, pure TUN uses Mihomo
+`auto-route` / `auto-redirect` (not SSClash MARK→`clash-tun`). The synced `tun:` block
+includes `strict-route: true` and `dns-hijack: []` — strict routing for gateway capture;
+empty DNS hijack so LAN DNS stays on SSClash **Firewall redirect** (`:53` → Mihomo),
+not a second hijack inside Mihomo. In **Connections**, TCP may show **Redir | tcp** — that
+is Mihomo `auto-redirect`, not HYBRID `redir-port`. **TUN stack** (`system` / `gvisor` /
+`mixed`) is written to `config.yaml` exactly as selected in Settings.
+
+## Proxy modes (Settings)
+
+| Mode | Capture | `config.yaml` (synced on Save / Start) | Notes |
+|---|---|---|---|
+| **TPROXY** | SSClash mangle TPROXY `:7894` | `tproxy-port: 7894` | Default on OpenWrt/Linux |
+| **HYBRID** | TCP nat DNAT → `:7893`, UDP TPROXY `:7894` | `redir-port: 7893`, `tproxy-port: 7894` | Default on Keenetic; full Options |
+| **TUN** | OpenWrt/Linux: MARK → `clash-tun`. Keenetic: Mihomo auto-route/redirect | `tun:` block (platform-specific) | TUN stack in Settings (tun/mixed) |
+| **MIXED** | TCP TPROXY, UDP MARK → `clash-tun` | `tproxy-port: 7894` + `tun:` | |
+
+When **Save** in Settings changes proxy mode or TUN stack, SSClash rewrites the active
+`config.yaml` profile if it disagrees (same ports/blocks as the table above), validates
+with `clash -t`, then restarts Mihomo when the service is running.
 
 ## Step 4: Mihomo kernel management
 
@@ -247,9 +291,11 @@ SSClash offers two interface processing modes:
 ### Additional settings
 
 - **Block QUIC traffic** — blocks UDP/443 to improve proxy effectiveness (YouTube, etc.)
-- **Reserved networks (firewall)** — destination IPv4 CIDRs that skip transparent-proxy marking (Settings → Options). Defaults include RFC special-use ranges and CGNAT `100.64.0.0/10` (Tailscale/Headscale); remove that prefix if Tailnet should go through Mihomo. Mihomo `private-ips` rules are separate.
-- **Port filter (firewall)** — destination TCP/UDP ports handled in netfilter *before* Mihomo (Settings → Options). **Bypass** never enters the core (e.g. fixed BitTorrent listen ports). **Proxy-only** (when non-empty) marks only listed ports — useful on weak routers so random torrent peers never enter the core. Empty lists keep the previous “all ports” behaviour. This is not the same as Mihomo `DST-PORT` rules.
-- **Bypass clients (firewall)** — source IPv4 CIDRs that skip transparent-proxy marking *and* DNS redirect, so those LAN hosts never enter Mihomo (Settings → Options). Not `config.yaml` `SRC-IP-CIDR` (that still sends packets into the core). Empty = off. With fake-ip, set a real DNS on the device; on OpenWrt/Keenetic DNS upstream is global, so firewall skip of DNS redirect does not apply.
+- **Reserved networks (firewall)** — destination IPv4 CIDRs that skip transparent-proxy marking (Settings → Options). Defaults include RFC special-use ranges and CGNAT `100.64.0.0/10` (Tailscale/Headscale); remove that prefix if Tailnet should go through Mihomo. Mihomo `private-ips` rules are separate. Hidden in UI on **Keenetic TUN**.
+- **Port filter (firewall)** — destination TCP/UDP ports handled in netfilter *before* Mihomo (Settings → Options). **Bypass** never enters the core (e.g. fixed BitTorrent listen ports). **Proxy-only** (when non-empty) marks only listed ports — useful on weak routers so random torrent peers never enter the core. Empty lists keep the previous “all ports” behaviour. This is not the same as Mihomo `DST-PORT` rules. Hidden in UI on **Keenetic TUN** (Mihomo capture bypasses SSClash port filter).
+- **TUN stack** — `system` / `gvisor` / `mixed` when proxy mode is **TUN** or **MIXED**; synced into `config.yaml` on Save (same value as Settings, no silent override).
+- **Firewall backend** — **Auto** / nftables / iptables on OpenWrt and generic Linux. Fixed **iptables** on Keenetic (see Keenetic section).
+- **Bypass clients (firewall)** — source IPv4 CIDRs that skip transparent-proxy marking *and* DNS redirect, so those LAN hosts never enter Mihomo (Settings → Options). Not `config.yaml` `SRC-IP-CIDR` (that still sends packets into the core). Empty = off. With fake-ip, set a real DNS on the device; on OpenWrt dnsmasq upstream is global, so bypassing DNS redirect there does not help — use a public DNS on the bypassed client. On **Keenetic TUN**, bypass skips DNS redirect and QUIC block only — Mihomo auto-route still captures IP traffic; use `SRC-IP-CIDR` in `config.yaml` or switch to HYBRID/TPROXY for SSClash-native per-client control.
 - **Store rules and proxy providers in RAM** — symlinks `rule-providers/` and `proxy-providers/` to tmpfs to reduce NAND wear
 - **Add HWID headers to subscriptions** — Remnawave-compatible 16-character HWID on proxy-provider requests (also used when fetching a remote full config URL)
 - **Backup / restore** — export or import `.ssclash/` settings and lists from the Settings page
@@ -371,7 +417,7 @@ ssclash version              print version
 
 These must stay aligned with `config.yaml` (ports, marks, table IDs):
 
-TPROXY port `7894`, DNS `7874`, external-controller `:9090`, fwmarks `0x1`/`0x2`/`0x3`, routing tables `100`/`101`, rule prefs `1000`/`1001`, nft table `inet clash`, TUN device `clash-tun`, default fake-ip range `198.18.0.0/15`.
+TPROXY port `7894`, HYBRID TCP redirect port `7893` (`redir-port`), DNS `7874`, external-controller `:9090`, fwmarks `0x1`/`0x2`/`0x3`, routing tables `100`/`101`, rule prefs `1000`/`1001`, nft table `inet clash`, TUN device `clash-tun`, default fake-ip range `198.18.0.0/15`.
 
 ## Release binaries
 

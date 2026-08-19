@@ -4,7 +4,8 @@
 # Prerequisites (Keenetic web UI -> General system settings -> Components):
 #   - Open packages support
 #   - Ext file system (USB drive formatted ext4, mounted with OPKG access)
-#   - Netfilter subsystem kernel modules
+#   - Netfilter subsystem kernel modules (reboot after enabling)
+#   - Network accelerator: SSClash disables PPE while the proxy runs
 #   - USB drive with Entware installed (see Keenetic OPKG guide)
 #
 # Run over SSH as root (Entware port 222 or system port 22):
@@ -622,9 +623,10 @@ write_settings() {
 		printf '%s=%s\n' "$_key" "$_val" >> "$SETTINGS"
 	}
 	set_default OPERATING_MODE gateway
-	set_default PROXY_MODE tproxy
-	set_default ENABLE_DNS_UPSTREAM true
-	set_default ENABLE_DNS_REDIRECT false
+	set_default PROXY_MODE hybrid
+	set_default FIREWALL_BACKEND iptables
+	set_default ENABLE_DNS_UPSTREAM false
+	set_default ENABLE_DNS_REDIRECT true
 	# Applies only after config.yaml uses fake-ip-filter-mode whitelist/rule.
 	set_default AUTO_FAKEIP_WHITELIST true
 }
@@ -649,15 +651,99 @@ check_netfilter_modules() {
 	fi
 }
 
-# check_iproute2 verifies the ip binary can do policy routing. BusyBox handles
-# addr/route but is often built without rule support, which would leave marked
-# packets on the main table with no visible error.
-check_iproute2() {
+# iptables_is_nft reports whether a binary talks to nf_tables (Entware 1.8
+# xtables-nft-multi). KeeneticOS forwarding uses xtables; nft rules apply
+# "successfully" while LAN traffic never hits them.
+iptables_is_nft() {
+	[ -n "$1" ] && [ -x "$1" ] || return 1
+	"$1" -V 2>&1 | grep -qi nf_tables
+}
+
+# iptables_userspace_ok reports a usable xtables iptables CLI (firmware, legacy, or busybox).
+iptables_userspace_ok() {
+	for _p in /sbin/iptables /usr/sbin/iptables /opt/sbin/iptables-legacy /usr/sbin/iptables-legacy; do
+		[ -x "$_p" ] || continue
+		iptables_is_nft "$_p" && continue
+		return 0
+	done
+	if command -v iptables-legacy >/dev/null 2>&1; then
+		_p="$(command -v iptables-legacy)"
+		iptables_is_nft "$_p" || return 0
+	fi
+	if command -v iptables >/dev/null 2>&1; then
+		_p="$(command -v iptables)"
+		iptables_is_nft "$_p" || return 0
+	fi
+	if [ -x /opt/sbin/iptables ] && ! iptables_is_nft /opt/sbin/iptables; then
+		return 0
+	fi
+	command -v busybox >/dev/null 2>&1 && busybox iptables -V >/dev/null 2>&1 && return 0
+	return 1
+}
+
+# ensure_iptables_userspace installs Entware iptables-legacy when only nft or
+# no CLI is present. Kernel Netfilter modules alone are not enough.
+ensure_iptables_userspace() {
+	if iptables_userspace_ok; then
+		return 0
+	fi
+	if ! command -v opkg >/dev/null 2>&1; then
+		warn "xtables iptables not found and opkg is missing"
+		warn "Enable 'Netfilter subsystem kernel modules' in Keenetic Components, then reboot"
+		return 0
+	fi
+	say "installing Entware iptables-legacy (xtables; iptables-nft cannot intercept Keenetic LAN)..."
+	opkg update >/dev/null 2>&1 || warn "opkg update failed — trying install anyway"
+	if opkg install iptables-legacy || opkg install iptables; then
+		hash -r 2>/dev/null || true
+		if iptables_userspace_ok; then
+			info "installed iptables"
+			return 0
+		fi
+	fi
+	warn "could not install xtables iptables via opkg"
+	warn "Enable 'Netfilter subsystem kernel modules' in Keenetic Components and reboot, or: opkg install iptables-legacy"
+}
+
+# ensure_ip_full installs Entware iproute2 when BusyBox `ip` cannot do `ip rule`.
+# Marks then stay on the main table and Mihomo Connections stay empty.
+ensure_ip_full() {
 	if ip rule show >/dev/null 2>&1; then
 		return 0
 	fi
+	if [ -x /opt/sbin/ip ] && /opt/sbin/ip rule show >/dev/null 2>&1; then
+		return 0
+	fi
+	if ! command -v opkg >/dev/null 2>&1; then
+		warn "'ip rule' is not supported by the ip binary in PATH — policy routing will not work"
+		warn "Install the full iproute2: opkg install ip-full"
+		return 0
+	fi
+	say "installing ip-full (BusyBox ip cannot do policy routing)..."
+	opkg update >/dev/null 2>&1 || warn "opkg update failed — trying install anyway"
+	if opkg install ip-full; then
+		hash -r 2>/dev/null || true
+		if ip rule show >/dev/null 2>&1 || { [ -x /opt/sbin/ip ] && /opt/sbin/ip rule show >/dev/null 2>&1; }; then
+			info "installed ip-full"
+			return 0
+		fi
+	fi
 	warn "'ip rule' is not supported by the ip binary in PATH — policy routing will not work"
 	warn "Install the full iproute2: opkg install ip-full"
+}
+
+# check_ppe warns when the hardware/software network accelerator is on.
+# PPE/HWNAT bypasses netfilter, so SSClash rules can look applied with empty Connections.
+check_ppe() {
+	_ndmc=""
+	for _p in /bin/ndmc /usr/sbin/ndmc /sbin/ndmc; do
+		[ -x "$_p" ] && _ndmc="$_p" && break
+	done
+	[ -n "$_ndmc" ] || return 0
+	_out="$("$_ndmc" -c "show ppe" 2>/dev/null || true)"
+	echo "$_out" | grep -qiE 'hardware:[[:space:]]*(enabled|on)|software:[[:space:]]*(enabled|on)' || return 0
+	warn "Keenetic network accelerator (PPE/HWNAT) is enabled — netfilter/TPROXY will not see LAN traffic"
+	warn "SSClash disables it while the proxy runs (Settings), or turn it off in General system settings → Performance"
 }
 
 # pick_lan_ipv4 prefers RFC1918 from global addresses (avoids WAN/KeenDNS in hints).
@@ -697,7 +783,9 @@ lan_ip() {
 say "SSClash-Go installer (Keenetic / Entware)"
 ensure_fetcher
 check_netfilter_modules
-check_iproute2
+ensure_iptables_userspace
+ensure_ip_full
+check_ppe
 detect_arch
 fetch_ssclash_release
 install_ssclash
@@ -722,17 +810,23 @@ cat <<EOF
    Mihomo:   ${MIHOMO_STATUS}
 
  Before first Start, verify in Keenetic web UI (Components):
-   - Netfilter subsystem kernel modules — enabled
+   - Netfilter subsystem kernel modules — enabled (reboot after enabling)
    - USB / Entware / OPKG — working
+   - Network accelerator off while the proxy runs (Settings default), or
+     General system settings → Performance
+   - ip-full if `ip rule` fails (installer tries opkg install ip-full)
+   - iptables -V must NOT say nf_tables (use firmware iptables or
+     opkg install iptables-legacy)
 
  Defaults written only if missing in $SETTINGS:
-   PROXY_MODE=tproxy, AUTO_FAKEIP_WHITELIST=true
+   FIREWALL_BACKEND=iptables, PROXY_MODE=hybrid, ENABLE_DNS_REDIRECT=true,
+   AUTO_FAKEIP_WHITELIST=true
    (AUTO_FAKEIP_WHITELIST applies only when config.yaml uses fake-ip whitelist)
 
  1. Open web UI:  ${SCHEME}://${UI_HOST}:${UI_P}
     Set the admin password on first visit.
  2. Settings — rescan interfaces, confirm LAN/WAN.
-    DNS is configured automatically at Start (see README Keenetic DNS table).
+    DNS interception: Settings → Firewall redirect (on by default on Keenetic).
  3. Configuration — subscriptions/proxies, press Start.
 
  Optional: proxy only selected clients by IP — Settings → Explicit + LAN;

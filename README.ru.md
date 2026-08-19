@@ -20,7 +20,7 @@
 - **Один бинарник, все архитектуры.** Готовые статические бинарники для amd64, arm64, armv5/6/7, 386, loong64, riscv64, ppc64le, s390x и вариантов mips/mipsle. Веб-интерфейс встроен в демон.
 - **Встроенный веб-UI** — **Конфигурация**, **Настройки**, **Списки правил**, встроенная панель **Proxies / Connections / Rules / Core Logs** и **Системный лог** — редактирование YAML, управление службой, интерфейсами/ядром и потоки в реальном времени.
 - **Внешнее ядро Mihomo**, полностью управляемое демоном: загрузка/обновление с GitHub Releases (архитектура определяется автоматически), запуск/остановка/перезапуск, проверка `clash -t` и горячая перезагрузка через API Mihomo.
-- **Собственный движок файрвола**: атомарный ruleset `nft -f -` (`table inet clash`) или fallback iptables/ipset; режимы **TPROXY / TUN / MIXED**; модели exclude/explicit; блокировка QUIC; зарезервированные сети назначения; фильтр портов; обход LAN-клиентов; оптимизация fake-ip whitelist; обход IP серверов подписок.
+- **Собственный движок файрвола**: атомарный ruleset `nft -f -` (`table inet clash`) или fallback iptables/ipset; режимы **TPROXY / HYBRID / TUN / MIXED**; модели exclude/explicit; блокировка QUIC; зарезервированные сети назначения; фильтр портов; обход LAN-клиентов; оптимизация fake-ip whitelist; обход IP серверов подписок.
 - **Policy routing** через `ip rule`/`ip route` (таблицы `100`/`101`, метки `0x1`/`0x2`/`0x3`).
 - **Безопасность по умолчанию**: пароль администратора при первом запуске (PBKDF2-HMAC-SHA256), HMAC-сессии, защита CSRF, опциональный HTTPS.
 - **Платформы**: OpenWrt и обычный Linux (systemd). Keenetic (Entware) поддерживается, но **автором не тестировался**.
@@ -180,11 +180,12 @@ curl -fsSL https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-
 > **Примечание:** поддержка Keenetic/Entware предоставляется as-is и **автором не
 > тестировалась**.
 
-Сначала установите Entware на USB. В веб-UI Keenetic → Компоненты включите **Open packages**, **Ext file system**, **Netfilter kernel modules**.
+Сначала установите Entware на USB. В веб-UI Keenetic → Компоненты включите **Open packages**, **Ext file system**, **Netfilter kernel modules** (после включения Netfilter — перезагрузка: этот компонент даёт штатный `iptables` / `xt_TPROXY`). Без него в стоковой прошивке нет userspace iptables; `opkg install iptables-legacy` — только запасной вариант. NDMS **не** API для TPROXY: он пересобирает `filter`/`nat`/`mangle` и сносит jump’ы в чужие цепочки. Официальная интеграция — хук [`/opt/etc/ndm/netfilter.d`](https://support.keenetic.com/hero/kn-1012/en/42407-opkg-component-description.html), который восстанавливает jump’ы через firmware iptables (таймаут 24 с — хук не делает полный Apply).
+
+**Сетевой ускоритель (PPE/HWNAT):** если он включён, пакеты обходят netfilter. Правила «применяются», счётчики остаются нулевыми, в **Connections** пусто во всех режимах. SSClash выключает PPE на время работы прокси (`ndmc no ppe`, без записи в NVRAM) и возвращает на Stop. Можно выключить вручную: **Общие настройки → Производительность**. Скорость WAN (и на части моделей LAN↔Wi-Fi) может упасть — это плата за любой netfilter-прокси на Keenetic.
 
 Для policy routing нужен полноценный iproute2: апплет `ip` из BusyBox часто
-собран без поддержки `rule`. Инсталлятор это проверяет и при необходимости
-подскажет выполнить `opkg install ip-full`.
+собран без поддержки `rule`. Инсталлятор ставит `opkg install ip-full`, если `ip rule` не работает.
 
 ```bash
 opkg update && opkg install wget-ssl ca-certificates
@@ -192,18 +193,60 @@ export PATH="/opt/bin:/opt/sbin:$PATH"
 wget -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash
 ```
 
-По умолчанию: TPROXY + Exclude, включён **Auto fake-ip whitelist**. NAT делает KeeneticOS.
-DNS по умолчанию через ndmc upstream (`127.0.0.1:7874`) в Настройках — на части
-прошивок ndmc может не принять нестандартный порт; если перехват DNS не работает,
-включите **Firewall redirect** в Настройках (или настройте DNS вручную).
+По умолчанию: **HYBRID** + Exclude, включён **Auto fake-ip whitelist**. NAT делает KeeneticOS.
+Перехват DNS по умолчанию — **Firewall redirect** в Настройках (LAN :53 → Mihomo).
+Клиентам нужен DNS роутера (DHCP Keenetic).
 
 KeeneticOS перестраивает netfilter при сохранении конфигурации, переподключении
-WAN и смене компонентов, стирая переходы в цепочки SSClash. Чтобы это пережить,
-при Start устанавливается NDMS-хук `/opt/etc/ndm/netfilter.d/50-ssclash.sh`: он
-проверяет правила после каждой перестройки и при необходимости применяет их
-заново. Stop удаляет хук. Так как netfilter в Keenetic работает через iptables,
-бэкенд iptables выбирается автоматически даже при установленном пакете
-`nftables` из Entware.
+WAN и смене компонентов, стирая переходы в цепочки SSClash. При Start ставится
+хук `/opt/etc/ndm/netfilter.d/50-ssclash.sh`: он возвращает `PREROUTING -j CLASH`
+(и правила DNS/QUIC) через `/sbin/iptables`. Полный reload демона — только если
+сами цепочки исчезли. Stop удаляет хук.
+
+**Бэкенд файрвола на Keenetic** зафиксирован на штатном **iptables** (xtables).
+В Настройках нет Auto и nftables. Инсталлятор пишет `FIREWALL_BACKEND=iptables`;
+Save/API приводят любое другое значение к iptables. Auto тоже разрешился бы в
+iptables, но принудительный nft отвергается при Apply. Entware `iptables-nft`
+(`nf_tables`) не перехватывает LAN Keenetic — инсталлятор ставит `iptables-legacy`,
+если xtables CLI нет. Предпочтительнее штатный бинарь из **Netfilter subsystem
+kernel modules**. В режиме **TUN** Mihomo стартует с `DISABLE_NFTABLES=1`, чтобы
+его `auto-redirect` тоже использовал iptables (та же причина, что у SSClash).
+
+**Рекомендуемые режимы прокси на Keenetic (по порядку):** **HYBRID** (дефолт
+инсталлятора — SSClash nat DNAT + TPROXY, все Options, работает при HTTPS роутера
+на 443), **TPROXY** (если перенести HTTPS веб-UI с TCP 443, напр. 8443), **TUN**
+в последнюю очередь (Mihomo auto-route/redirect — bypass/policy в Options ограничены).
+
+**Политики доступа Keenetic (HYBRID / TPROXY / MIXED):** Настройки → **Respect Keenetic
+access policy** — выбор политик с роутера (Интернет → Политики доступа). SSClash
+учитывает connmark NDMS в правилах файрвола: в прокси попадают только устройства,
+назначенные на выбранные политики. В **TUN** недоступно (захват делает Mihomo).
+
+**TPROXY на Keenetic и TCP 443:** KeeneticOS использует порт 443 внутри `xt_TPROXY`;
+LAN TCP на `:443` часто не доходит до SSClash (счётчики TPROXY остаются нулевыми).
+Используйте **HYBRID** (дефолт), перенесите HTTPS роутера на другой порт (напр.
+`8443` — `sh install-keenetic.sh --port 8443`) или **TUN**.
+
+**Keenetic TUN vs OpenWrt/Linux TUN:** на Keenetic чистый TUN использует Mihomo
+`auto-route` / `auto-redirect` (не SSClash MARK→`clash-tun`). В синхронизируемый блок
+`tun:` входят `strict-route: true` и `dns-hijack: []` — жёсткая маршрутизация на
+шлюзе; пустой DNS hijack, чтобы LAN DNS шёл через SSClash **Firewall redirect**
+(`:53` → Mihomo), без второго перехвата в Mihomo. В **Connections** TCP может быть
+**Redir | tcp** — это Mihomo `auto-redirect`, а не HYBRID `redir-port`. **TUN stack**
+(`system` / `gvisor` / `mixed`) пишется в `config.yaml` ровно как в Настройках.
+
+## Режимы прокси (Настройки)
+
+| Режим | Захват | `config.yaml` (синхронизация при Save / Start) | Примечания |
+|---|---|---|---|
+| **TPROXY** | SSClash mangle TPROXY `:7894` | `tproxy-port: 7894` | Дефолт на OpenWrt/Linux |
+| **HYBRID** | TCP nat DNAT → `:7893`, UDP TPROXY `:7894` | `redir-port: 7893`, `tproxy-port: 7894` | Дефолт на Keenetic; все Options |
+| **TUN** | OpenWrt/Linux: MARK → `clash-tun`. Keenetic: Mihomo auto-route/redirect | блок `tun:` (зависит от платформы) | TUN stack в Настройках (tun/mixed) |
+| **MIXED** | TCP TPROXY, UDP MARK → `clash-tun` | `tproxy-port: 7894` + `tun:` | |
+
+При **Save** в Настройках, если proxy mode или TUN stack расходятся с активным профилем,
+SSClash перезаписывает `config.yaml` (порты/блоки как в таблице), проверяет `clash -t`
+и перезапускает Mihomo, если служба уже запущена.
 
 ## Шаг 4: Управление ядром Mihomo
 
@@ -248,9 +291,11 @@ SSClash предлагает два режима:
 ### Дополнительные настройки
 
 - **Блокировать QUIC-трафик** — блокирует UDP/443 для повышения эффективности прокси (YouTube и т.п.)
-- **Зарезервированные сети (firewall)** — destination IPv4 CIDR, которые не маркируются прозрачным прокси (Настройки → Options). По умолчанию RFC special-use и CGNAT `100.64.0.0/10` (Tailscale/Headscale); уберите этот префикс, если Tailnet должен идти через Mihomo. Правила Mihomo `private-ips` — отдельно.
-- **Фильтр портов (firewall)** — destination TCP/UDP обрабатываются в netfilter *до* Mihomo (Настройки → Options). **Bypass** никогда не попадает в ядро (например, фиксированные порты BitTorrent). **Proxy-only** (если список не пуст) помечает только перечисленные порты — удобно на слабом роутере, чтобы случайные торрент-пиры не попадали в ядро. Пустые списки сохраняют прежнее поведение «все порты». Это не то же самое, что правила Mihomo `DST-PORT`.
-- **Обход клиентов (firewall)** — source IPv4 CIDR без маркировки прозрачного прокси *и* без DNS redirect, поэтому эти LAN-хосты не попадают в Mihomo (Настройки → Options). Это не `SRC-IP-CIDR` в `config.yaml` (там пакет всё равно идёт в ядро). Пустой список = off. При fake-ip укажите устройству реальный DNS; на OpenWrt/Keenetic DNS upstream глобальный, поэтому файрвол не может пропустить DNS redirect.
+- **Зарезервированные сети (firewall)** — destination IPv4 CIDR, которые не маркируются прозрачным прокси (Настройки → Options). По умолчанию RFC special-use и CGNAT `100.64.0.0/10` (Tailscale/Headscale); уберите этот префикс, если Tailnet должен идти через Mihomo. Правила Mihomo `private-ips` — отдельно. В UI скрыты на **Keenetic TUN**.
+- **Фильтр портов (firewall)** — destination TCP/UDP обрабатываются в netfilter *до* Mihomo (Настройки → Options). **Bypass** никогда не попадает в ядро (например, фиксированные порты BitTorrent). **Proxy-only** (если список не пуст) помечает только перечисленные порты — удобно на слабом роутере, чтобы случайные торрент-пиры не попадали в ядро. Пустые списки сохраняют прежнее поведение «все порты». Это не то же самое, что правила Mihomo `DST-PORT`. В UI скрыт на **Keenetic TUN** (Mihomo обходит port filter SSClash).
+- **TUN stack** — `system` / `gvisor` / `mixed` при режимах **TUN** или **MIXED**; синхронизируется в `config.yaml` при Save (как в Настройках, без скрытой подмены).
+- **Бэкенд файрвола** — **Auto** / nftables / iptables на OpenWrt и Linux. На Keenetic фиксирован **iptables** (см. раздел Keenetic).
+- **Обход клиентов (firewall)** — source IPv4 CIDR без маркировки прозрачного прокси *и* без DNS redirect, поэтому эти LAN-хосты не попадают в Mihomo (Настройки → Options). Это не `SRC-IP-CIDR` в `config.yaml` (там пакет всё равно идёт в ядро). Пустой список = off. При fake-ip укажите устройству реальный DNS; на OpenWrt upstream dnsmasq глобальный — обход DNS redirect там не помогает, задайте публичный DNS на обходимом клиенте. На **Keenetic TUN** обход отключает только DNS redirect и QUIC block — Mihomo auto-route по-прежнему захватывает IP; для per-client control используйте `SRC-IP-CIDR` в `config.yaml` или HYBRID/TPROXY.
 - **Хранить правила и proxy-providers в RAM** — симлинки `rule-providers/` и `proxy-providers/` на tmpfs для снижения износа NAND
 - **Добавить HWID-заголовки к подпискам** — 16-символьный HWID для Remnawave на запросах proxy-provider (также при загрузке полного конфига по URL)
 - **Резервное копирование** — экспорт/импорт настроек и списков из `.ssclash/` на странице Настроек
@@ -372,7 +417,7 @@ ssclash version              вывести версию
 
 Должны совпадать с `config.yaml` (порты, метки, ID таблиц):
 
-TPROXY порт `7894`, DNS `7874`, external-controller `:9090`, метки `0x1`/`0x2`/`0x3`, таблицы маршрутизации `100`/`101`, приоритеты правил `1000`/`1001`, nft-таблица `inet clash`, TUN-устройство `clash-tun`, диапазон fake-ip по умолчанию `198.18.0.0/15`.
+TPROXY порт `7894`, HYBRID TCP redirect порт `7893` (`redir-port`), DNS `7874`, external-controller `:9090`, метки `0x1`/`0x2`/`0x3`, таблицы маршрутизации `100`/`101`, приоритеты правил `1000`/`1001`, nft-таблица `inet clash`, TUN-устройство `clash-tun`, диапазон fake-ip по умолчанию `198.18.0.0/15`.
 
 ## Бинарники релизов
 
