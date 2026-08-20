@@ -658,50 +658,95 @@ iptables_is_nft() {
 	"$1" -V 2>&1 | grep -qi nf_tables
 }
 
-# iptables_userspace_ok reports a usable xtables iptables CLI (firmware, legacy, or busybox).
-iptables_userspace_ok() {
+# iptables_userspace_bin prints the first usable xtables iptables path, or returns 1.
+iptables_userspace_bin() {
 	for _p in /sbin/iptables /usr/sbin/iptables /opt/sbin/iptables-legacy /usr/sbin/iptables-legacy; do
 		[ -x "$_p" ] || continue
 		iptables_is_nft "$_p" && continue
+		echo "$_p"
 		return 0
 	done
 	if command -v iptables-legacy >/dev/null 2>&1; then
 		_p="$(command -v iptables-legacy)"
-		iptables_is_nft "$_p" || return 0
+		iptables_is_nft "$_p" || {
+			echo "$_p"
+			return 0
+		}
 	fi
 	if command -v iptables >/dev/null 2>&1; then
 		_p="$(command -v iptables)"
-		iptables_is_nft "$_p" || return 0
+		iptables_is_nft "$_p" || {
+			echo "$_p"
+			return 0
+		}
 	fi
 	if [ -x /opt/sbin/iptables ] && ! iptables_is_nft /opt/sbin/iptables; then
+		echo /opt/sbin/iptables
 		return 0
 	fi
-	command -v busybox >/dev/null 2>&1 && busybox iptables -V >/dev/null 2>&1 && return 0
+	if command -v busybox >/dev/null 2>&1 && busybox iptables -V >/dev/null 2>&1; then
+		echo busybox
+		return 0
+	fi
 	return 1
 }
 
-# ensure_iptables_userspace installs Entware iptables-legacy when only nft or
-# no CLI is present. Kernel Netfilter modules alone are not enough.
+# iptables_userspace_ok reports a usable xtables iptables CLI (firmware, legacy, or busybox).
+iptables_userspace_ok() {
+	iptables_userspace_bin >/dev/null 2>&1
+}
+
+iptables_version_line() {
+	_bin="$1"
+	[ -n "$_bin" ] || return 1
+	if [ "$_bin" = busybox ]; then
+		busybox iptables -V 2>&1 | head -n 1
+		return 0
+	fi
+	"$_bin" -V 2>&1 | head -n 1
+}
+
+# ensure_iptables_userspace installs Entware xtables userspace when no CLI is present.
+# Tries iptables-legacy first (always xtables), then iptables (feed-dependent).
 ensure_iptables_userspace() {
-	if iptables_userspace_ok; then
+	_ipt=""
+	if _ipt="$(iptables_userspace_bin 2>/dev/null)"; then
+		info "iptables userspace OK: $_ipt ($(iptables_version_line "$_ipt"))"
 		return 0
 	fi
 	if ! command -v opkg >/dev/null 2>&1; then
-		warn "xtables iptables not found and opkg is missing"
+		warn "iptables userspace not found and opkg is missing"
 		warn "Enable 'Netfilter subsystem kernel modules' in Keenetic Components, then reboot"
+		warn "Then install xtables CLI: opkg install iptables-legacy (or opkg install iptables if iptables -V has no nf_tables)"
 		return 0
 	fi
-	say "installing Entware iptables-legacy (xtables; iptables-nft cannot intercept Keenetic LAN)..."
+	say "iptables userspace not found — installing via Entware (xtables required on Keenetic)"
+	info "trying opkg install iptables-legacy first (guaranteed xtables; Entware iptables may be nf_tables on some feeds)"
 	opkg update >/dev/null 2>&1 || warn "opkg update failed — trying install anyway"
-	if opkg install iptables-legacy || opkg install iptables; then
-		hash -r 2>/dev/null || true
-		if iptables_userspace_ok; then
-			info "installed iptables"
-			return 0
-		fi
+	_pkg=""
+	if opkg install iptables-legacy; then
+		_pkg="iptables-legacy"
+	elif opkg install iptables; then
+		_pkg="iptables"
+		info "iptables-legacy unavailable — installed opkg package iptables (verify: iptables -V must not say nf_tables)"
+	else
+		_pkg=""
 	fi
-	warn "could not install xtables iptables via opkg"
-	warn "Enable 'Netfilter subsystem kernel modules' in Keenetic Components and reboot, or: opkg install iptables-legacy"
+	hash -r 2>/dev/null || true
+	if [ -n "$_pkg" ]; then
+		info "opkg installed: $_pkg"
+	fi
+	if _ipt="$(iptables_userspace_bin 2>/dev/null)"; then
+		info "iptables userspace ready: $_ipt ($(iptables_version_line "$_ipt"))"
+		return 0
+	fi
+	warn "could not obtain xtables iptables after opkg install"
+	if command -v iptables >/dev/null 2>&1; then
+		warn "current iptables -V: $(iptables -V 2>&1 | head -n 1)"
+		warn "nf_tables builds do not intercept Keenetic LAN — use iptables-legacy or an xtables iptables package"
+	else
+		warn "manual fix: opkg install iptables-legacy  (or opkg install iptables if iptables -V has no nf_tables)"
+	fi
 }
 
 # ensure_ip_full installs Entware iproute2 when BusyBox `ip` cannot do `ip rule`.
@@ -797,8 +842,8 @@ cat <<EOF
    - Netfilter subsystem kernel modules — enabled (reboot after enabling)
    - USB / Entware / OPKG — working
    - ip-full if `ip rule` fails (installer tries opkg install ip-full)
-   - iptables -V must NOT say nf_tables (use firmware iptables or
-     opkg install iptables-legacy)
+   - iptables userspace (xtables): firmware /sbin/iptables when present, else
+     opkg install iptables-legacy or opkg install iptables (iptables -V must NOT say nf_tables)
 
  Defaults written only if missing in $SETTINGS:
    FIREWALL_BACKEND=iptables, PROXY_MODE=hybrid, ENABLE_DNS_REDIRECT=true,

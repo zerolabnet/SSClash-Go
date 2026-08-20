@@ -20,7 +20,7 @@
 - **Один бинарник, все архитектуры.** Готовые статические бинарники для amd64, arm64, armv5/6/7, 386, loong64, riscv64, ppc64le, s390x и вариантов mips/mipsle. Веб-интерфейс встроен в демон.
 - **Встроенный веб-UI** — **Конфигурация**, **Настройки**, **Списки правил**, встроенная панель **Proxies / Connections / Rules / Core Logs** и **Системный лог** — редактирование YAML, управление службой, интерфейсами/ядром и потоки в реальном времени.
 - **Внешнее ядро Mihomo**, полностью управляемое демоном: загрузка/обновление с GitHub Releases (архитектура определяется автоматически), запуск/остановка/перезапуск, проверка `clash -t` и горячая перезагрузка через API Mihomo.
-- **Собственный движок файрвола**: атомарный ruleset `nft -f -` (`table inet clash`) или fallback iptables/ipset; режимы **TPROXY / HYBRID / TUN / MIXED**; модели exclude/explicit; блокировка QUIC; зарезервированные сети назначения; фильтр портов; обход LAN-клиентов; оптимизация fake-ip whitelist; обход IP серверов подписок.
+- **Собственный движок файрвола**: атомарный ruleset `nft -f -` (`table inet clash`) или fallback iptables/ipset; режимы **TPROXY / HYBRID / TUN / MIXED / MIXED2**; модели exclude/explicit; блокировка QUIC; зарезервированные сети назначения; фильтр портов; обход LAN-клиентов; оптимизация fake-ip whitelist; обход IP серверов подписок.
 - **Policy routing** через `ip rule`/`ip route` (таблицы `100`/`101`, метки `0x1`/`0x2`/`0x3`).
 - **Безопасность по умолчанию**: пароль администратора при первом запуске (PBKDF2-HMAC-SHA256), HMAC-сессии, защита CSRF, опциональный HTTPS.
 - **Платформы**: OpenWrt, обычный Linux (systemd) и Keenetic (Entware).
@@ -177,9 +177,7 @@ curl -fsSL https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-
 
 ## Ручная установка — Keenetic
 
-Сначала установите Entware на USB. В веб-UI Keenetic → Компоненты включите **Open packages**, **Ext file system**, **Netfilter kernel modules** (после включения Netfilter — перезагрузка: этот компонент даёт штатный `iptables` / `xt_TPROXY`). Без него в стоковой прошивке нет userspace iptables; `opkg install iptables-legacy` — только запасной вариант. NDMS **не** API для TPROXY: он пересобирает `filter`/`nat`/`mangle` и сносит jump’ы в чужие цепочки. Официальная интеграция — хук [`/opt/etc/ndm/netfilter.d`](https://support.keenetic.com/hero/kn-1012/en/42407-opkg-component-description.html), который восстанавливает jump’ы через firmware iptables (таймаут 24 с — хук не делает полный Apply).
-
-**Сетевой ускоритель (PPE/HWNAT):** если включён, пакеты могут обходить netfilter — правила «есть», а **Connections** пусто. Выключите в **Общие настройки → Производительность**, если так. SSClash PPE не трогает.
+Сначала установите Entware на USB. В веб-UI Keenetic → Компоненты включите **Open packages**, **Ext file system**, **Netfilter kernel modules** (после включения Netfilter — перезагрузка: модули ядра `xt_TPROXY` / netfilter; userspace-бинарник `iptables` **не** всегда ставится). SSClash нужен **xtables** CLI: штатный `/sbin/iptables`, если есть, иначе инсталлятор выполняет `opkg install iptables-legacy` или `opkg install iptables` (оба подходят, если `iptables -V` **не** содержит `nf_tables`). NDMS **не** API для TPROXY: он пересобирает `filter`/`nat`/`mangle` и сносит jump’ы в чужие цепочки. Официальная интеграция — хук [`/opt/etc/ndm/netfilter.d`](https://support.keenetic.com/hero/kn-1012/en/42407-opkg-component-description.html), который восстанавливает jump’ы через найденный xtables `iptables` (таймаут 24 с — хук не делает полный Apply).
 
 Для policy routing нужен полноценный iproute2: апплет `ip` из BusyBox часто
 собран без поддержки `rule`. Инсталлятор ставит `opkg install ip-full`, если `ip rule` не работает.
@@ -197,40 +195,45 @@ wget -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-s
 KeeneticOS перестраивает netfilter при сохранении конфигурации, переподключении
 WAN и смене компонентов, стирая переходы в цепочки SSClash. При Start ставится
 хук `/opt/etc/ndm/netfilter.d/50-ssclash.sh`: он возвращает `PREROUTING -j CLASH`
-(и правила DNS/QUIC) через `/sbin/iptables`. Полный reload демона — только если
+(и правила DNS/QUIC) через найденный xtables `iptables`. Полный reload демона — только если
 сами цепочки исчезли. Stop удаляет хук.
 
-**Бэкенд файрвола на Keenetic** зафиксирован на штатном **iptables** (xtables).
+**Бэкенд файрвола на Keenetic** зафиксирован на **iptables** (xtables userspace, не nftables).
 В Настройках нет Auto и nftables. Инсталлятор пишет `FIREWALL_BACKEND=iptables`;
 Save/API приводят любое другое значение к iptables. Auto тоже разрешился бы в
-iptables, но принудительный nft отвергается при Apply. Entware `iptables-nft`
-(`nf_tables`) не перехватывает LAN Keenetic — инсталлятор ставит `iptables-legacy`,
-если xtables CLI нет. Предпочтительнее штатный бинарь из **Netfilter subsystem
-kernel modules**. В режиме **TUN** Mihomo стартует с `DISABLE_NFTABLES=1`, чтобы
+iptables, но принудительный nft отвергается при Apply. Entware-сборки, где `iptables -V`
+сообщает `nf_tables`, не перехватывают LAN Keenetic — нужен xtables (`/sbin/iptables`,
+`iptables-legacy` или Entware `iptables`, если это xtables). Инсталлятор выполняет
+`opkg install iptables-legacy` или `opkg install iptables`, если подходящего CLI нет.
+Компонент **Netfilter subsystem kernel modules** всё равно нужен для модулей ядра
+(`xt_TPROXY`, …). В режиме **TUN** Mihomo стартует с `DISABLE_NFTABLES=1`, чтобы
 его `auto-redirect` тоже использовал iptables (та же причина, что у SSClash).
 
 **Рекомендуемые режимы прокси на Keenetic (по порядку):** **HYBRID** (дефолт
 инсталлятора — SSClash nat DNAT + TPROXY, все Options, работает при HTTPS роутера
-на 443), **TPROXY** (если перенести HTTPS веб-UI с TCP 443, напр. 8443), **TUN**
-в последнюю очередь (Mihomo auto-route/redirect — bypass/policy в Options ограничены).
+на 443), **MIXED2** (TCP как HYBRID, UDP через `clash-tun` — лучше QUIC/UDP, без
+проблемы TCP 443 TPROXY), **TPROXY** (если перенести HTTPS **управления роутером**
+с TCP 443, напр. 8443, в веб-UI Keenetic), **TUN** в последнюю очередь (Mihomo
+auto-route/redirect — bypass/policy в Options ограничены).
+**MIXED** (TCP TPROXY + UDP TUN) наследует ограничение Keenetic на TCP `:443` в TPROXY;
+на практике редко полезен — предпочитайте **HYBRID** или **MIXED2**.
 
-**Политики доступа Keenetic (HYBRID / TPROXY / MIXED):** Настройки → **Respect Keenetic
-access policy** — выбор политик с роутера (Интернет → Политики доступа). SSClash
+**Политики доступа Keenetic (HYBRID / TPROXY / MIXED / MIXED2):** Настройки → **Respect Keenetic
+access policy** — выбор политик с роутера (Интернет → Приоритеты подключений). SSClash
 учитывает connmark NDMS в правилах файрвола: в прокси попадают только устройства,
 назначенные на выбранные политики. В **TUN** недоступно (захват делает Mihomo).
 
 **TPROXY на Keenetic и TCP 443:** KeeneticOS использует порт 443 внутри `xt_TPROXY`;
 LAN TCP на `:443` часто не доходит до SSClash (счётчики TPROXY остаются нулевыми).
-Используйте **HYBRID** (дефолт), перенесите HTTPS роутера на другой порт (напр.
-`8443` — `sh install-keenetic.sh --port 8443`) или **TUN**.
+Используйте **HYBRID** (дефолт), перенесите HTTPS управления роутером на другой порт
+(напр. 8443) в веб-UI Keenetic, или **TUN**.
 
 **Keenetic TUN vs OpenWrt/Linux TUN:** на Keenetic чистый TUN использует Mihomo
 `auto-route` / `auto-redirect` (не SSClash MARK→`clash-tun`). В синхронизируемый блок
 `tun:` входят `strict-route: true` и `dns-hijack: []` — жёсткая маршрутизация на
 шлюзе; пустой DNS hijack, чтобы LAN DNS шёл через SSClash **Firewall redirect**
 (`:53` → Mihomo), без второго перехвата в Mihomo. В **Connections** TCP может быть
-**Redir | tcp** — это Mihomo `auto-redirect`, а не HYBRID `redir-port`. **TUN stack**
-(`system` / `gvisor` / `mixed`) пишется в `config.yaml` ровно как в Настройках.
+**Redir | tcp** — это Mihomo `auto-redirect`, а не HYBRID `redir-port`.
 
 ## Режимы прокси (Настройки)
 
@@ -239,7 +242,8 @@ LAN TCP на `:443` часто не доходит до SSClash (счётчик�
 | **TPROXY** | SSClash mangle TPROXY `:7894` | `tproxy-port: 7894` | Дефолт на OpenWrt/Linux |
 | **HYBRID** | TCP nat DNAT → `:7893`, UDP TPROXY `:7894` | `redir-port: 7893`, `tproxy-port: 7894` | Дефолт на Keenetic; все Options |
 | **TUN** | OpenWrt/Linux: MARK → `clash-tun`. Keenetic: Mihomo auto-route/redirect | блок `tun:` (зависит от платформы) | TUN stack в Настройках (tun/mixed) |
-| **MIXED** | TCP TPROXY, UDP MARK → `clash-tun` | `tproxy-port: 7894` + `tun:` | |
+| **MIXED** | TCP TPROXY, UDP MARK → `clash-tun` | `tproxy-port: 7894` + `tun:` | На Keenetic: проблема TCP `:443` TPROXY; лучше HYBRID/MIXED2 |
+| **MIXED2** | TCP nat DNAT → `:7893`, UDP MARK → `clash-tun` | `redir-port: 7893` + `tun:` (без `tproxy-port`) | TCP как HYBRID + UDP как MIXED; все Options на Keenetic |
 
 При **Save** в Настройках, если proxy mode или TUN stack расходятся с активным профилем,
 SSClash перезаписывает `config.yaml` (порты/блоки как в таблице), проверяет `clash -t`
@@ -290,9 +294,7 @@ SSClash предлагает два режима:
 - **Блокировать QUIC-трафик** — блокирует UDP/443 для повышения эффективности прокси (YouTube и т.п.)
 - **Зарезервированные сети (firewall)** — destination IPv4 CIDR, которые не маркируются прозрачным прокси (Настройки → Options). По умолчанию RFC special-use и CGNAT `100.64.0.0/10` (Tailscale/Headscale); уберите этот префикс, если Tailnet должен идти через Mihomo. Правила Mihomo `private-ips` — отдельно. В UI скрыты на **Keenetic TUN**.
 - **Фильтр портов (firewall)** — destination TCP/UDP обрабатываются в netfilter *до* Mihomo (Настройки → Options). **Bypass** никогда не попадает в ядро (например, фиксированные порты BitTorrent). **Proxy-only** (если список не пуст) помечает только перечисленные порты — удобно на слабом роутере, чтобы случайные торрент-пиры не попадали в ядро. Пустые списки сохраняют прежнее поведение «все порты». Это не то же самое, что правила Mihomo `DST-PORT`. В UI скрыт на **Keenetic TUN** (Mihomo обходит port filter SSClash).
-- **TUN stack** — `system` / `gvisor` / `mixed` при режимах **TUN** или **MIXED**; синхронизируется в `config.yaml` при Save (как в Настройках, без скрытой подмены).
-- **Бэкенд файрвола** — **Auto** / nftables / iptables на OpenWrt и Linux. На Keenetic фиксирован **iptables** (см. раздел Keenetic).
-- **Обход клиентов (firewall)** — source IPv4 CIDR без маркировки прозрачного прокси *и* без DNS redirect, поэтому эти LAN-хосты не попадают в Mihomo (Настройки → Options). Это не `SRC-IP-CIDR` в `config.yaml` (там пакет всё равно идёт в ядро). Пустой список = off. При fake-ip укажите устройству реальный DNS; на OpenWrt upstream dnsmasq глобальный — обход DNS redirect там не помогает, задайте публичный DNS на обходимом клиенте. На **Keenetic TUN** обход отключает только DNS redirect и QUIC block — Mihomo auto-route по-прежнему захватывает IP; для per-client control используйте `SRC-IP-CIDR` в `config.yaml` или HYBRID/TPROXY.
+- **Обход клиентов (firewall)** — source IPv4 CIDR без маркировки прозрачного прокси *и* без DNS redirect, поэтому эти LAN-хосты не попадают в Mihomo (Настройки → Options). Это не `SRC-IP-CIDR` в `config.yaml` (там пакет всё равно идёт в ядро). Пустой список = off. При fake-ip укажите устройству реальный DNS; на OpenWrt upstream dnsmasq глобальный — обход DNS redirect там не помогает, задайте публичный DNS на обходимом клиенте. На **Keenetic TUN** обход отключает только DNS redirect и QUIC block — Mihomo auto-route по-прежнему захватывает IP; для per-client control используйте `SRC-IP-CIDR` в `config.yaml` или HYBRID/MIXED2/TPROXY.
 - **Хранить правила и proxy-providers в RAM** — симлинки `rule-providers/` и `proxy-providers/` на tmpfs для снижения износа NAND
 - **Добавить HWID-заголовки к подпискам** — 16-символьный HWID для Remnawave на запросах proxy-provider (также при загрузке полного конфига по URL)
 - **Резервное копирование** — экспорт/импорт настроек и списков из `.ssclash/` на странице Настроек
@@ -395,7 +397,7 @@ SSClash предлагает два режима:
 | `SSCLASH_ADDR` | `:9091` | Адрес прослушивания веб-UI |
 | `SSCLASH_SECRET` | auto | Секрет подписи сессий (иначе сохраняется на диск) |
 | `SSCLASH_TLS_CERT` / `SSCLASH_TLS_KEY` | — | HTTPS для веб-UI |
-| `SSCLASH_DEBUG` | `0` | `1` — подробная диагностика запуска в stderr |
+| `SSCLASH_DEBUG` | `0` | `1` — подробная диагностика boot в stderr; доп. предупреждения gateway. Полный дамп счётчиков iptables: `ssclash fw diagnose` |
 | `SSCLASH_BRAND` | `SSClash` | Имя продукта в авторизованном UI |
 | `SSCLASH_LOGIN_TITLE` | — | Опциональный бренд на экранах входа/настройки |
 
@@ -404,6 +406,8 @@ SSClash предлагает два режима:
 ```
 ssclash [serve]              запуск демона + веб-UI (по умолчанию)
 ssclash fw start|stop|update применить / снять / обновить файрвол и маршрутизацию
+ssclash fw diagnose          intercept, политики, счётчики iptables (диагностика)
+ssclash fw ndm-reload        восстановить jump'ы SSClash после пересборки netfilter KeeneticOS
 ssclash hotplug wan|tun      обработчики WAN-up или TUN-add (вручную / cron)
 ssclash cleanup              убрать сироту Mihomo и файрвол после аварийной остановки
 ssclash setpass [password]   задать пароль администратора
