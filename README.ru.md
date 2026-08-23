@@ -40,7 +40,7 @@
 ├── proxy-providers/     # загруженные proxy-providers (было proxy_providers/)
 ├── subscriptions/       # вставленные списки ссылок (file providers)
 ├── ui/                  # файлы внешней панели
-├── .ssclash/            # настройки, пароль, сессия, резервные копии DNS
+├── .ssclash/            # настройки, пароль, сессия, резервная копия dnsmasq (OpenWrt)
 └── (runtime) /tmp/ssclash/  # кэши, tmpfs-симлинки, кэш IP подписок
 ```
 
@@ -165,6 +165,15 @@ tar -xzf /tmp/ssclash-openwrt-service.tar.gz -C /
 /etc/init.d/ssclash start
 ```
 
+### DNS на OpenWrt
+
+На OpenWrt по умолчанию в Настройках включён **OpenWrt dnsmasq upstream** (не firewall redirect). Режимы **взаимоисключающие** — включение одного отключает другой:
+
+- **OpenWrt dnsmasq upstream** (дефолт) — при **Start** SSClash добавляет в dnsmasq `127.0.0.1#7874`, ставит `noresolv=1` и перезагружает dnsmasq после старта Mihomo. Клиентам нужен DNS роутера (DHCP). Исходные значения uci dnsmasq сохраняются в `.ssclash/` и восстанавливаются при **Stop**.
+- **Firewall redirect** — `dnsmasq port=0` (dnsmasq не слушает `:53`), перехват LAN `:53` (TCP/UDP) в netfilter → Mihomo. Ловит «жёсткий» DNS (напр. `8.8.8.8:53`). В `config.yaml` держите `dns.listen` на `0.0.0.0:7874`. Redirect на всём LAN ingress (VLAN, порты моста); WAN исключён.
+
+Переключайте режим в **Настройках** → DNS до **Start** или **Restart**.
+
 ## Ручная установка — обычный Linux
 
 Требования: systemd, `nft` или `iptables`, `ip`.
@@ -173,7 +182,7 @@ tar -xzf /tmp/ssclash-openwrt-service.tar.gz -C /
 curl -fsSL https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | sudo sh -s -- --from ./ssclash-linux-amd64 --mode gateway
 ```
 
-Режим gateway применяет файрвол, policy routing и перехват DNS при нажатии **Start**. Режим server запускает только Mihomo (`listeners:` в конфигурации).
+Режим gateway применяет файрвол, policy routing и перехват DNS (зависит от платформы) при **Start** (OpenWrt: dnsmasq upstream по умолчанию; Keenetic/Linux: firewall redirect). Режим server запускает только Mihomo (`listeners:` в конфигурации).
 
 ## Ручная установка — Keenetic
 
@@ -291,10 +300,12 @@ SSClash предлагает два режима:
 
 ### Дополнительные настройки
 
+- **OpenWrt dnsmasq upstream** — Настройки → DNS (дефолт на OpenWrt). Направляет dnsmasq на Mihomo `:7874`; взаимоисключим с firewall redirect (см. **DNS на OpenWrt** выше).
+- **Firewall redirect** — Настройки → DNS. Дефолт на Keenetic и обычном Linux; опционально на OpenWrt. Перенаправляет LAN `:53` (TCP/UDP) на Mihomo `:7874`.
 - **Блокировать QUIC-трафик** — блокирует UDP/443 для повышения эффективности прокси (YouTube и т.п.)
 - **Зарезервированные сети (firewall)** — destination IPv4 CIDR, которые не маркируются прозрачным прокси (Настройки → Options). По умолчанию RFC special-use и CGNAT `100.64.0.0/10` (Tailscale/Headscale); уберите этот префикс, если Tailnet должен идти через Mihomo. Правила Mihomo `private-ips` — отдельно. В UI скрыты на **Keenetic TUN**.
 - **Фильтр портов (firewall)** — destination TCP/UDP обрабатываются в netfilter *до* Mihomo (Настройки → Options). **Bypass** никогда не попадает в ядро (например, фиксированные порты BitTorrent). **Proxy-only** (если список не пуст) помечает только перечисленные порты — удобно на слабом роутере, чтобы случайные торрент-пиры не попадали в ядро. Пустые списки сохраняют прежнее поведение «все порты». Это не то же самое, что правила Mihomo `DST-PORT`. В UI скрыт на **Keenetic TUN** (Mihomo обходит port filter SSClash).
-- **Обход клиентов (firewall)** — source IPv4 CIDR без маркировки прозрачного прокси *и* без DNS redirect, поэтому эти LAN-хосты не попадают в Mihomo (Настройки → Options). Это не `SRC-IP-CIDR` в `config.yaml` (там пакет всё равно идёт в ядро). Пустой список = off. При fake-ip укажите устройству реальный DNS; на OpenWrt upstream dnsmasq глобальный — обход DNS redirect там не помогает, задайте публичный DNS на обходимом клиенте. На **Keenetic TUN** обход отключает только DNS redirect и QUIC block — Mihomo auto-route по-прежнему захватывает IP; для per-client control используйте `SRC-IP-CIDR` в `config.yaml` или HYBRID/MIXED2/TPROXY.
+- **Обход клиентов (firewall)** — source IPv4 CIDR без маркировки прозрачного прокси *и* без DNS redirect, поэтому эти LAN-хосты не попадают в Mihomo (Настройки → Options). Это не `SRC-IP-CIDR` в `config.yaml` (там пакет всё равно идёт в ядро). Пустой список = off. При fake-ip укажите устройству реальный DNS. На **OpenWrt dnsmasq upstream** (дефолт) список обхода не меняет DNS для клиентов с DNS роутера — они по-прежнему идут через dnsmasq → Mihomo; задайте публичный DNS на обходимом клиенте. На **OpenWrt firewall redirect** обход отключает DNS redirect (как на Keenetic/Linux) — нужен свой DNS на клиенте. На **Keenetic TUN** обход отключает только DNS redirect и QUIC block — Mihomo auto-route по-прежнему захватывает IP; для per-client control используйте `SRC-IP-CIDR` в `config.yaml` или HYBRID/MIXED2/TPROXY.
 - **Хранить правила и proxy-providers в RAM** — симлинки `rule-providers/` и `proxy-providers/` на tmpfs для снижения износа NAND
 - **Добавить HWID-заголовки к подпискам** — 16-символьный HWID для Remnawave на запросах proxy-provider (также при загрузке полного конфига по URL)
 - **Резервное копирование** — экспорт/импорт настроек и списков из `.ssclash/` на странице Настроек
