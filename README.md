@@ -40,7 +40,7 @@ Everything lives under `/opt/clash` by default (`SSCLASH_ROOT` overrides this):
 ├── proxy-providers/     # downloaded proxy providers (was proxy_providers/)
 ├── subscriptions/       # pasted link lists (file providers)
 ├── ui/                  # external dashboard files
-├── .ssclash/            # settings, password, session, DNS backups
+├── .ssclash/            # settings, password, session, OpenWrt dnsmasq backup
 └── (runtime) /tmp/ssclash/  # caches, tmpfs symlinks, subscription IP cache
 ```
 
@@ -165,6 +165,15 @@ tar -xzf /tmp/ssclash-openwrt-service.tar.gz -C /
 /etc/init.d/ssclash start
 ```
 
+### DNS on OpenWrt
+
+OpenWrt defaults to **OpenWrt dnsmasq upstream** in Settings (not firewall redirect). The two modes are **mutually exclusive** — turning one on turns the other off:
+
+- **OpenWrt dnsmasq upstream** (default) — on **Start**, SSClash adds `127.0.0.1#7874` to dnsmasq, sets `noresolv=1`, and reloads dnsmasq after Mihomo listens. Clients should use the router as DNS (DHCP). Original dnsmasq uci values are backed up under `.ssclash/` and restored on **Stop**.
+- **Firewall redirect** — firewall-only on OpenWrt (dnsmasq unchanged). Redirects LAN port 53 (TCP/UDP) to Mihomo in netfilter. Catches hard-coded public DNS (e.g. `8.8.8.8:53`). Keep `dns.listen` on `0.0.0.0:7874` in `config.yaml`. Redirect applies on all LAN ingress (VLAN and bridge member ports included); WAN is excluded. Switching from upstream clears prior dnsmasq upstream uci.
+
+Switch modes in **Settings** → DNS before **Start** or **Restart**.
+
 ## Manual install — generic Linux
 
 Prerequisites: systemd, `nft` or `iptables`, `ip`.
@@ -173,7 +182,7 @@ Prerequisites: systemd, `nft` or `iptables`, `ip`.
 curl -fsSL https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | sudo sh -s -- --from ./ssclash-linux-amd64 --mode gateway
 ```
 
-Gateway mode applies firewall, policy routing and DNS redirect when you press **Start**. Server mode runs Mihomo only (`listeners:` in Configuration).
+Gateway mode applies firewall, policy routing and platform DNS interception when you press **Start** (OpenWrt: dnsmasq upstream by default; Keenetic/Linux: firewall redirect). Server mode runs Mihomo only (`listeners:` in Configuration).
 
 ## Manual install — Keenetic
 
@@ -289,10 +298,12 @@ SSClash offers two interface processing modes:
 
 ### Additional settings
 
+- **OpenWrt dnsmasq upstream** — Settings → DNS (default on OpenWrt). Points dnsmasq at Mihomo `:7874`; mutually exclusive with firewall redirect (see [DNS on OpenWrt](#dns-on-openwrt)).
+- **Firewall redirect** — Settings → DNS. Default on Keenetic and generic Linux; optional on OpenWrt. Redirects LAN port 53 (TCP/UDP) to Mihomo `:7874`.
 - **Block QUIC traffic** — blocks UDP/443 to improve proxy effectiveness (YouTube, etc.)
 - **Reserved networks (firewall)** — destination IPv4 CIDRs that skip transparent-proxy marking (Settings → Options). Defaults include RFC special-use ranges and CGNAT `100.64.0.0/10` (Tailscale/Headscale); remove that prefix if Tailnet should go through Mihomo. Mihomo `private-ips` rules are separate. Hidden in UI on **Keenetic TUN**.
 - **Port filter (firewall)** — destination TCP/UDP ports handled in netfilter *before* Mihomo (Settings → Options). **Bypass** never enters the core (e.g. fixed BitTorrent listen ports). **Proxy-only** (when non-empty) marks only listed ports — useful on weak routers so random torrent peers never enter the core. Empty lists keep the previous “all ports” behaviour. This is not the same as Mihomo `DST-PORT` rules. Hidden in UI on **Keenetic TUN** (Mihomo capture bypasses SSClash port filter).
-- **Bypass clients (firewall)** — source IPv4 CIDRs that skip transparent-proxy marking *and* DNS redirect, so those LAN hosts never enter Mihomo (Settings → Options). Not `config.yaml` `SRC-IP-CIDR` (that still sends packets into the core). Empty = off. With fake-ip, set a real DNS on the device; on OpenWrt dnsmasq upstream is global, so bypassing DNS redirect there does not help — use a public DNS on the bypassed client. On **Keenetic TUN**, bypass skips DNS redirect and QUIC block only — Mihomo auto-route still captures IP traffic; use `SRC-IP-CIDR` in `config.yaml` or switch to HYBRID/MIXED2/TPROXY for SSClash-native per-client control.
+- **Bypass clients (firewall)** — source IPv4 CIDRs that skip transparent-proxy marking *and* DNS redirect, so those LAN hosts never enter Mihomo (Settings → Options). Not `config.yaml` `SRC-IP-CIDR` (that still sends packets into the core). Empty = off. With fake-ip, set a real DNS on the device. On **OpenWrt dnsmasq upstream** (default), the bypass list does not change DNS for clients using router DNS — they still resolve via dnsmasq → Mihomo; set a public DNS on bypassed clients. On **OpenWrt firewall redirect**, bypass skips DNS redirect (same as Keenetic/Linux) — use a public DNS on the bypassed client. On **Keenetic TUN**, bypass skips DNS redirect and QUIC block only — Mihomo auto-route still captures IP traffic; use `SRC-IP-CIDR` in `config.yaml` or switch to HYBRID/MIXED2/TPROXY for SSClash-native per-client control.
 - **Store rules and proxy providers in RAM** — symlinks `rule-providers/` and `proxy-providers/` to tmpfs to reduce NAND wear
 - **Add HWID headers to subscriptions** — Remnawave-compatible 16-character HWID on proxy-provider requests (also used when fetching a remote full config URL)
 - **Backup / restore** — export or import `.ssclash/` settings and lists from the Settings page
