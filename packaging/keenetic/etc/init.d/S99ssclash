@@ -58,7 +58,15 @@ start() {
 	echo "Starting $DESC..."
 	# Avoid EMFILE under dead-proxy/DNS connection storms (default soft nofile is often 1024).
 	ulimit -n 1048576 2>/dev/null || ulimit -n 65536 2>/dev/null || true
-	"$PROG" serve &
+	# Keenetic ndm/rc.unslung inherits stdio. Leaving those pipes open can
+	# block boot (wrapper waits on them) or deliver SIGHUP when it exits —
+	# serve only traps INT/TERM, so SIGHUP would kill the daemon. Redirect
+	# and a new session match Entware daemon practice; UI logs stay in logbuf.
+	if command -v setsid >/dev/null 2>&1; then
+		setsid "$PROG" serve </dev/null >/dev/null 2>&1 &
+	else
+		"$PROG" serve </dev/null >/dev/null 2>&1 &
+	fi
 	echo $! > "$PIDFILE"
 }
 
