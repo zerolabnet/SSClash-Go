@@ -55,6 +55,20 @@ err() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo ">> $*"; }
 warn() { echo "WARNING: $*" >&2; }
 
+# Fail when Mihomo was expected but no runnable kernel exists. --no-mihomo is OK;
+# upgrade keeps exit 0 if an existing kernel at $CLASH_BIN still runs.
+assert_mihomo_ready() {
+	case "$MIHOMO_STATUS" in
+	installed*|skipped*) return 0 ;;
+	esac
+	if [ -x "$CLASH_BIN" ] && "$CLASH_BIN" -v >/dev/null 2>&1; then
+		warn "Mihomo update failed ($MIHOMO_STATUS) — keeping existing kernel at $CLASH_BIN"
+		MIHOMO_STATUS="kept existing ($MIHOMO_STATUS)"
+		return 0
+	fi
+	err "Mihomo kernel install failed ($MIHOMO_STATUS). Fix network/GitHub access and re-run, pass --no-mihomo to skip, or install the kernel from Settings → Mihomo kernel after SSClash is up."
+}
+
 install_file() {
 	_src="$1"
 	_dst="$2"
@@ -469,18 +483,28 @@ install_mihomo() {
 		return 0
 	fi
 	rm -f "$_tmp_gz"
-	chmod +x "$_tmp_bin"
-
-	if ! verify_downloaded_bin "$_tmp_bin" "Mihomo" || ! "$_tmp_bin" -v >/dev/null 2>&1; then
-		warn "downloaded Mihomo binary does not run on this host — keeping existing kernel"
+	if ! verify_downloaded_bin "$_tmp_bin" "Mihomo"; then
 		rm -f "$_tmp_bin"
+		MIHOMO_STATUS="missing (bad/wrong-arch binary)"
+		return 0
+	fi
+	# Do not execute from /tmp: generic Linux often mounts it noexec, so
+	# `mktemp && chmod +x && -v` fails even though the kernel is fine.
+	mkdir -p "$(dirname "$CLASH_BIN")"
+	_stage="$(dirname "$CLASH_BIN")/.mihomo-new.$$"
+	rm -f "$_stage"
+	cp -f "$_tmp_bin" "$_stage"
+	rm -f "$_tmp_bin"
+	chmod +x "$_stage"
+	if ! "$_stage" -v >/dev/null 2>&1; then
+		warn "downloaded Mihomo binary does not run on this host — keeping existing kernel"
+		rm -f "$_stage"
 		MIHOMO_STATUS="missing (bad/wrong-arch binary)"
 		return 0
 	fi
 
 	stop_ssclash_for_upgrade
-	mkdir -p "$(dirname "$CLASH_BIN")"
-	mv -f "$_tmp_bin" "$CLASH_BIN"
+	mv -f "$_stage" "$CLASH_BIN"
 	chmod +x "$CLASH_BIN"
 	rm -f /opt/clash/bin/meta-backup 2>/dev/null || true
 
@@ -526,6 +550,7 @@ info "Installing binary -> $DEST"
 install_bin "$BIN_SRC" "$DEST" 755 "ssclash" || err "ssclash install failed (bad download?)"
 
 install_mihomo
+assert_mihomo_ready
 
 info "Recording operating mode in $SETTINGS"
 if [ -f "$SETTINGS" ] && grep -q '^OPERATING_MODE=' "$SETTINGS" 2>/dev/null; then
@@ -608,16 +633,15 @@ cat <<EOF
     (set the admin password on first visit)
 EOF
 case "$MIHOMO_STATUS" in
-	installed*)
+	installed*|kept*)
 		cat <<EOF
  2. Settings -> edit config.yaml, then Start.
 EOF
 		;;
-	*)
+	skipped*)
 		cat <<EOF
  2. Settings -> download the Mihomo kernel, edit config.yaml, then Start.
 EOF
-		warn "Mihomo kernel not ready — open Settings → Mihomo kernel, then Start"
 		;;
 esac
 if [ "$MODE" = "gateway" ]; then

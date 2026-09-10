@@ -54,6 +54,18 @@ info() { echo "[ssclash]   $*"; }
 warn() { echo "[ssclash] ! $*"; }
 die()  { echo "[ssclash] ERROR: $*" >&2; exit 1; }
 
+assert_mihomo_ready() {
+	case "$MIHOMO_STATUS" in
+	installed*|skipped*) return 0 ;;
+	esac
+	if [ -x "$CLASH_BIN" ] && "$CLASH_BIN" -v >/dev/null 2>&1; then
+		warn "Mihomo update failed ($MIHOMO_STATUS) — keeping existing kernel at $CLASH_BIN"
+		MIHOMO_STATUS="kept existing ($MIHOMO_STATUS)"
+		return 0
+	fi
+	die "Mihomo kernel install failed ($MIHOMO_STATUS). Fix network/GitHub access and re-run, pass --no-mihomo to skip, or install the kernel from Settings → Mihomo kernel after SSClash is up."
+}
+
 # Copy a non-executable file into place (init scripts, etc.).
 install_file() {
 	_src="$1"
@@ -701,18 +713,27 @@ install_mihomo() {
 		return 0
 	fi
 	rm -f "$_tmp_gz"
-	chmod +x "$_tmp_bin"
-
-	if ! verify_downloaded_bin "$_tmp_bin" "Mihomo" || ! "$_tmp_bin" -v >/dev/null 2>&1; then
-		warn "downloaded Mihomo binary does not run on this host — keeping existing kernel"
+	if ! verify_downloaded_bin "$_tmp_bin" "Mihomo"; then
 		rm -f "$_tmp_bin"
+		MIHOMO_STATUS="missing (bad/wrong-arch binary)"
+		return 0
+	fi
+	# Do not execute from /tmp: it may be noexec (same as generic Linux).
+	mkdir -p "$(dirname "$CLASH_BIN")"
+	_stage="$(dirname "$CLASH_BIN")/.mihomo-new.$$"
+	rm -f "$_stage"
+	cp -f "$_tmp_bin" "$_stage"
+	rm -f "$_tmp_bin"
+	chmod +x "$_stage"
+	if ! "$_stage" -v >/dev/null 2>&1; then
+		warn "downloaded Mihomo binary does not run on this host — keeping existing kernel"
+		rm -f "$_stage"
 		MIHOMO_STATUS="missing (bad/wrong-arch binary)"
 		return 0
 	fi
 
 	stop_ssclash_for_upgrade
-	mkdir -p "$(dirname "$CLASH_BIN")"
-	mv -f "$_tmp_bin" "$CLASH_BIN"
+	mv -f "$_stage" "$CLASH_BIN"
 	chmod +x "$CLASH_BIN"
 	rm -f /opt/clash/bin/meta-backup 2>/dev/null || true
 
@@ -754,6 +775,7 @@ if [ "$SSCLASH_WAS_ENABLED" = "1" ]; then
 fi
 
 install_mihomo
+assert_mihomo_ready
 
 /etc/init.d/ssclash enable
 /etc/init.d/ssclash start >/dev/null 2>&1 \
@@ -772,10 +794,4 @@ cat <<EOF
    ssclash:  ${SSCLASH_BIN} (${SSCLASH_TAG:-installed})
    Mihomo:   ${MIHOMO_STATUS}
 EOF
-case "$MIHOMO_STATUS" in
-	installed*) ;;
-	*)
-		warn "Mihomo kernel not ready — open Settings → Mihomo kernel, then Start"
-		;;
-esac
 say "done. Open ${SCHEME}://${UI_HOST}:${UI_P}, set the admin password, then Start."
