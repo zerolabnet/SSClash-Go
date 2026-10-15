@@ -20,8 +20,8 @@ while keeping the same `/opt/clash` layout and feature set.
 - **One binary, every architecture.** Pre-built static binaries for amd64, arm64, armv5/6/7, 386, loong64, riscv64, ppc64le, s390x and mips/mipsle variants. The web UI is embedded in the daemon.
 - **Embedded web UI** — **Configuration**, **Settings**, **Rule Lists**, built-in **Proxies / Connections / Rules / Core Logs** dashboard, and **System Log** — with YAML editing, service control, interface/kernel management and live streams.
 - **External Mihomo core**, fully managed: download/update from GitHub releases (arch auto-detected), start/stop/restart, `clash -t` validation and hot reload via the Mihomo API.
-- **Native firewall engine**: atomic `nft -f -` ruleset (`table inet clash`) or iptables/ipset fallback; **TPROXY / HYBRID / TUN / MIXED / MIXED2** modes; exclude/explicit interface model; QUIC blocking; optional DoT/DoH blocking when Mihomo DNS interception is active; reserved destination networks; port filter; per-client source bypass; fake-ip whitelist optimisation; subscription server-IP bypass.
-- **Policy routing** via `ip rule`/`ip route` (tables `100`/`101`, fwmarks `0x1`/`0x2`/`0x3`).
+- **Native firewall engine**: atomic `nft -f -` ruleset (`table inet clash`) or iptables/ipset fallback; **TPROXY / HYBRID / TUN / MIXED / MIXED2** modes; exclude/explicit interface model; QUIC blocking; optional drop of forwarded IPv6; optional kill switch while Mihomo is down; optional DoT/DoH blocking when Mihomo DNS interception is active; reserved destination networks; port filter; per-client source bypass; fake-ip whitelist optimisation; subscription server-IP bypass.
+- **Policy routing** via `ip rule`/`ip route` (tables `100`/`101`, fwmarks `0x1`/`0x2`/`0x3` on OpenWrt and Linux; Keenetic uses `0x80000000`/`0x10000000` with mask `0x90000000`).
 - **Secure by default**: first-run admin password (PBKDF2-HMAC-SHA256), HMAC session cookies, CSRF protection, optional HTTPS.
 - **Platform support**: OpenWrt, generic Linux (systemd), and Keenetic (Entware).
 
@@ -318,6 +318,10 @@ SSClash offers two interface processing modes:
 - **Block DoT / Block DoH (dibdot) / Block DoH (custom)** — Settings → DNS when Mihomo DNS interception is active; see [Block DoT / DoH](#block-dot--doh).
 - **Block QUIC traffic** — blocks UDP/443 to improve proxy effectiveness (YouTube, etc.)
 - **Reserved networks (firewall)** — destination IPv4 CIDRs that skip transparent-proxy marking (Settings → Options). Defaults include RFC special-use ranges and CGNAT `100.64.0.0/10` (Tailscale/Headscale); remove that prefix if Tailnet should go through Mihomo. Mihomo `private-ips` rules are separate.
+- **Kill switch** — Settings → Options, Gateway only, off by default. While it is on and Mihomo is not running, LAN clients cannot reach the internet: forwarded traffic toward the WAN is dropped. The panel, SSH and the router's own traffic stay up. Existing WAN port-forwards (DNAT) still pass. When the WAN interface is known, LAN-to-LAN is left alone; when it is not, all forwarding is dropped. Forwarded IPv6 is dropped for the same window. Turning the option on while the proxy is already running changes nothing until the next stop. Turning it off lifts the drop immediately. Server mode never arms it. On Keenetic the NDMS hook stays while the option is on. On OpenWrt, firewall include `firewall.ssclash_ks` (`/var/etc/ssclash-ks.include`) reapplies the drop after a firewall4 reload. On generic Linux the drop remains until SSClash removes it. The window after boot before the SSClash process starts, and a SIGKILL before cleanup, are not covered.
+- **Drop forwarded IPv6** — Settings → Options, Gateway only, off by default. Drops IPv6 the router would forward, including excluded interfaces and WAN-to-LAN. The router keeps its own IPv6. AAAA answers are not filtered and IPv6 forwarding is not switched off. If `ip6tables` is missing, Apply still succeeds and the gateway log warns.
+- **Block QUIC traffic** — blocks UDP/443 to improve proxy effectiveness (YouTube, etc.)
+- **Reserved networks (firewall)** — destination IPv4 CIDRs that skip transparent-proxy marking (Settings → Options). Defaults include RFC special-use ranges and CGNAT `100.64.0.0/10` (Tailscale/Headscale); remove that prefix if Tailnet should go through Mihomo. Mihomo `private-ips` rules are separate. In **TPROXY**, **HYBRID** and **MIXED**, table `100` also gets a scope-link route for each connected IPv4 prefix on an intercepted interface, so a fwmark source lookup still succeeds when Tailscale sets `src_valid_mark=1`. **TUN** and **MIXED2** do not add these routes.
 - **Port filter (firewall)** — destination TCP/UDP ports handled in netfilter *before* Mihomo (Settings → Options). **Bypass** never enters the core (e.g. fixed BitTorrent listen ports). **Proxy-only** (when non-empty) marks only listed ports — useful on weak routers so random torrent peers never enter the core. Empty lists keep the previous “all ports” behaviour. This is not the same as Mihomo `DST-PORT` rules.
 - **Bypass clients (firewall)** — source IPv4 CIDRs that skip transparent-proxy marking *and* DNS redirect, so those LAN hosts never enter Mihomo (Settings → Options). Not `config.yaml` `SRC-IP-CIDR` (that still sends packets into the core). Empty = off. With fake-ip, set a real DNS on the device. On **OpenWrt dnsmasq upstream** (default), the bypass list does not change DNS for clients using router DNS — they still resolve via dnsmasq → Mihomo; set a public DNS on bypassed clients. On **OpenWrt firewall redirect**, bypass skips DNS redirect (same as Keenetic/Linux) — use a public DNS on the bypassed client.
 - **Store rules and proxy providers in RAM** — symlinks `rule-providers/` and `proxy-providers/` to tmpfs to reduce NAND wear
@@ -343,8 +347,7 @@ Edit `config.yaml` in the built-in ACE editor:
 - **Load from URL** (optional) — download a full Mihomo YAML into profile `remote` (Remnawave `/sub/{token}` falls back to `/mihomo`). Auto-update can follow the provider’s `Profile-Update-Interval` or a fixed custom interval (1–168h); **Save settings** changes URL/auto/interval without re-downloading; **Stop remote source** clears the subscription while keeping profile `remote` as a local copy. Independent of proxy-provider refresh. Empty URL keeps local-only behaviour.
 - **Subscription disable/enable** — comment out proxy-provider blocks without deleting them
 - **Open Dashboard** — opens the Mihomo external UI (see Step 9)
-
-<p align="center">
+- **Listeners** — Server mode only. **Add listener** on the Configuration page builds an inbound Mihomo listener. The Listeners card appears once at least one listener exists. Outside Server mode the button and the card stay hidden.
   <img src=".github/assets/images/screenshots/scr-01.png" alt="Configuration editor" width="800">
 </p>
 
@@ -435,6 +438,7 @@ ssclash fw diagnose          log intercept wiring, policies, iptables counters (
 ssclash fw ndm-reload        restore SSClash jumps after KeeneticOS netfilter rebuild
 ssclash hotplug wan|tun      run WAN-up or TUN-add handlers (manual / cron)
 ssclash cleanup              remove orphan Mihomo + firewall after unclean stop
+ssclash fw sync-killswitch   install or remove the gateway kill switch (exit 10: drop is on)
 ssclash setpass [password]   set the web admin password
 ssclash version              print version
 ```
@@ -445,7 +449,7 @@ These must stay aligned with `config.yaml` (ports, marks, table IDs):
 
 TPROXY port `7894`, HYBRID TCP redirect port `7893` (`redir-port`), DNS `7874`, external-controller `:9090`, fwmarks `0x1`/`0x2`/`0x3`, routing tables `100`/`101`, rule prefs `1000`/`1001`, nft table `inet clash`, TUN device `clash-tun`, default fake-ip range `198.18.0.0/15`.
 
-## Release binaries
+TPROXY port `7894`, HYBRID TCP redirect port `7893` (`redir-port`), DNS `7874`, external-controller `:9090`, fwmarks `0x1`/`0x2`/`0x3` (OpenWrt and Linux), Keenetic fwmarks `0x80000000`/`0x10000000` with mask `0x90000000`, routing tables `100`/`101`, rule prefs `1000`/`1001`, nft table `inet clash`, TUN device `clash-tun`, default fake-ip range `198.18.0.0/15`.
 
 Each [GitHub Release](https://github.com/zerolabnet/SSClash-Go/releases) includes:
 

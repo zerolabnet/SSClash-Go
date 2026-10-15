@@ -20,8 +20,8 @@
 - **Один бинарник, все архитектуры.** Готовые статические бинарники для amd64, arm64, armv5/6/7, 386, loong64, riscv64, ppc64le, s390x и вариантов mips/mipsle. Веб-интерфейс встроен в демон.
 - **Встроенный веб-UI** — **Конфигурация**, **Настройки**, **Списки правил**, встроенная панель **Proxies / Connections / Rules / Core Logs** и **Системный лог** — редактирование YAML, управление службой, интерфейсами/ядром и потоки в реальном времени.
 - **Внешнее ядро Mihomo**, полностью управляемое демоном: загрузка/обновление с GitHub Releases (архитектура определяется автоматически), запуск/остановка/перезапуск, проверка `clash -t` и горячая перезагрузка через API Mihomo.
-- **Собственный движок файрвола**: атомарный ruleset `nft -f -` (`table inet clash`) или fallback iptables/ipset; режимы **TPROXY / HYBRID / TUN / MIXED / MIXED2**; модели exclude/explicit; блокировка QUIC; опциональная блокировка DoT/DoH при перехвате DNS Mihomo; зарезервированные сети назначения; фильтр портов; обход LAN-клиентов; оптимизация fake-ip whitelist; обход IP серверов подписок.
-- **Policy routing** через `ip rule`/`ip route` (таблицы `100`/`101`, метки `0x1`/`0x2`/`0x3`).
+- **Собственный движок файрвола**: атомарный ruleset `nft -f -` (`table inet clash`) или fallback iptables/ipset; режимы **TPROXY / HYBRID / TUN / MIXED / MIXED2**; модели exclude/explicit; блокировка QUIC; опциональный запрет форвардинга IPv6; опциональный kill switch, пока Mihomo не запущен; опциональная блокировка DoT/DoH при перехвате DNS Mihomo; зарезервированные сети назначения; фильтр портов; обход LAN-клиентов; оптимизация fake-ip whitelist; обход IP серверов подписок.
+- **Policy routing** через `ip rule`/`ip route` (таблицы `100`/`101`, метки `0x1`/`0x2`/`0x3` на OpenWrt и Linux; на Keenetic `0x80000000`/`0x10000000` с маской `0x90000000`).
 - **Безопасность по умолчанию**: пароль администратора при первом запуске (PBKDF2-HMAC-SHA256), HMAC-сессии, защита CSRF, опциональный HTTPS.
 - **Платформы**: OpenWrt, обычный Linux (systemd) и Keenetic (Entware).
 
@@ -319,8 +319,10 @@ SSClash предлагает два режима:
 - **OpenWrt dnsmasq upstream** — Настройки → DNS (дефолт на OpenWrt). Направляет dnsmasq на Mihomo `:7874`; взаимоисключим с firewall redirect (см. **DNS на OpenWrt** выше).
 - **Firewall redirect** — Настройки → DNS. Дефолт на Keenetic и обычном Linux; опционально на OpenWrt. Перенаправляет LAN `:53` (TCP/UDP) на Mihomo `:7874`.
 - **Block DoT / Block DoH (dibdot) / Block DoH (custom)** — Настройки → DNS при активном перехвате DNS Mihomo; см. [Блокировка DoT / DoH](#блокировка-dot--doh).
+- **Kill switch** — Настройки → Options, только Gateway, по умолчанию выключен. Пока опция включена и Mihomo не запущен, клиенты LAN не выходят в интернет: форвардинг к WAN отбрасывается. Панель, SSH и собственный трафик роутера работают. Уже существующие пробросы портов с WAN (DNAT) проходят. Если WAN известен, обмен LAN–LAN остаётся; если нет — отбрасывается весь форвардинг. Форвардинг IPv6 в этом окне тоже отбрасывается. Включение при уже работающем прокси ничего не меняет до следующего Stop. Выключение снимает запрет сразу. В режиме Server запрет не ставится. На Keenetic хук NDMS остаётся, пока опция включена. На OpenWrt include `firewall.ssclash_ks` (`/var/etc/ssclash-ks.include`) ставит запрет снова после перезагрузки firewall4. На обычном Linux запрет держится, пока его не снимет SSClash. Окно после включения роутера до старта процесса SSClash и SIGKILL до cleanup не закрываются.
+- **Drop forwarded IPv6** — Настройки → Options, только Gateway, по умолчанию выключен. Отбрасывает IPv6, который роутер форвардил бы дальше, включая исключённые интерфейсы и направление WAN→LAN. Собственный IPv6 роутера остаётся. Ответы AAAA не фильтруются, форвардинг IPv6 в системе не выключается. Если нет `ip6tables`, Apply проходит, в логе gateway — предупреждение.
 - **Блокировать QUIC-трафик** — блокирует UDP/443 для повышения эффективности прокси (YouTube и т.п.)
-- **Зарезервированные сети (firewall)** — destination IPv4 CIDR, которые не маркируются прозрачным прокси (Настройки → Options). По умолчанию RFC special-use и CGNAT `100.64.0.0/10` (Tailscale/Headscale); уберите этот префикс, если Tailnet должен идти через Mihomo. Правила Mihomo `private-ips` — отдельно.
+- **Зарезервированные сети (firewall)** — destination IPv4 CIDR, которые не маркируются прозрачным прокси (Настройки → Options). По умолчанию RFC special-use и CGNAT `100.64.0.0/10` (Tailscale/Headscale); уберите этот префикс, если Tailnet должен идти через Mihomo. Правила Mihomo `private-ips` — отдельно. В режимах **TPROXY**, **HYBRID** и **MIXED** в таблицу `100` дополнительно пишется scope-link маршрут каждой подключённой IPv4-сети на перехватываемом интерфейсе: поиск источника по fwmark остаётся верным, когда Tailscale ставит `src_valid_mark=1`. **TUN** и **MIXED2** эти маршруты не добавляют.
 - **Фильтр портов (firewall)** — destination TCP/UDP обрабатываются в netfilter *до* Mihomo (Настройки → Options). **Bypass** никогда не попадает в ядро (например, фиксированные порты BitTorrent). **Proxy-only** (если список не пуст) помечает только перечисленные порты — удобно на слабом роутере, чтобы случайные торрент-пиры не попадали в ядро. Пустые списки сохраняют прежнее поведение «все порты». Это не то же самое, что правила Mihomo `DST-PORT`.
 - **Обход клиентов (firewall)** — source IPv4 CIDR без маркировки прозрачного прокси *и* без DNS redirect, поэтому эти LAN-хосты не попадают в Mihomo (Настройки → Options). Это не `SRC-IP-CIDR` в `config.yaml` (там пакет всё равно идёт в ядро). Пустой список = off. При fake-ip укажите устройству реальный DNS. На **OpenWrt dnsmasq upstream** (дефолт) список обхода не меняет DNS для клиентов с DNS роутера — они по-прежнему идут через dnsmasq → Mihomo; задайте публичный DNS на обходимом клиенте. На **OpenWrt firewall redirect** обход отключает DNS redirect (как на Keenetic/Linux) — нужен свой DNS на клиенте.
 - **Хранить правила и proxy-providers в RAM** — симлинки `rule-providers/` и `proxy-providers/` на tmpfs для снижения износа NAND
@@ -346,6 +348,7 @@ SSClash предлагает два режима:
 - **Загрузка по URL** (опционально) — скачать полный Mihomo YAML в профиль `remote` (для Remnawave путь `/sub/{token}` повторяется как `/mihomo`). Автообновление — из `Profile-Update-Interval` провайдера или свой интервал (1–168ч); **Save settings** меняет URL/auto/interval без повторной загрузки; **Stop remote source** отписывает от URL, оставляя профиль `remote` локальной копией. Не связано с обновлением proxy-providers. Пустой URL — только локальное редактирование.
 - **Отключение/включение подписок** — комментирование блоков proxy-provider без удаления
 - **Open Dashboard** — открывает внешний UI Mihomo (см. шаг 9)
+- **Listeners** — только режим Server. **Add listener** на странице Конфигурации собирает входящий listener Mihomo. Карточка Listeners появляется, когда listener уже есть хотя бы один. Вне режима Server кнопка и карточка скрыты.
 
 <p align="center">
   <img src=".github/assets/images/screenshots/scr-01.png" alt="Редактор конфигурации" width="800">
@@ -436,6 +439,7 @@ ssclash [serve]              запуск демона + веб-UI (по умо�
 ssclash fw start|stop|update применить / снять / обновить файрвол и маршрутизацию
 ssclash fw diagnose          intercept, политики, счётчики iptables (диагностика)
 ssclash fw ndm-reload        восстановить jump'ы SSClash после пересборки netfilter KeeneticOS
+ssclash fw sync-killswitch   поставить или снять kill switch шлюза (код 10: запрет включён)
 ssclash hotplug wan|tun      обработчики WAN-up или TUN-add (вручную / cron)
 ssclash cleanup              убрать сироту Mihomo и файрвол после аварийной остановки
 ssclash setpass [password]   задать пароль администратора
@@ -446,7 +450,7 @@ ssclash version              вывести версию
 
 Должны совпадать с `config.yaml` (порты, метки, ID таблиц):
 
-TPROXY порт `7894`, HYBRID TCP redirect порт `7893` (`redir-port`), DNS `7874`, external-controller `:9090`, метки `0x1`/`0x2`/`0x3`, таблицы маршрутизации `100`/`101`, приоритеты правил `1000`/`1001`, nft-таблица `inet clash`, TUN-устройство `clash-tun`, диапазон fake-ip по умолчанию `198.18.0.0/15`.
+TPROXY порт `7894`, HYBRID TCP redirect порт `7893` (`redir-port`), DNS `7874`, external-controller `:9090`, метки `0x1`/`0x2`/`0x3` (OpenWrt и Linux), метки Keenetic `0x80000000`/`0x10000000` с маской `0x90000000`, таблицы маршрутизации `100`/`101`, приоритеты правил `1000`/`1001`, nft-таблица `inet clash`, TUN-устройство `clash-tun`, диапазон fake-ip по умолчанию `198.18.0.0/15`.
 
 ## Бинарники релизов
 
