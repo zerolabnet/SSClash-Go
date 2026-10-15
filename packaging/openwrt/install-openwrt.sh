@@ -17,7 +17,12 @@
 #   --tls-cert <path>    TLS certificate (PEM); requires --tls-key
 #   --tls-key <path>     TLS private key (PEM); requires --tls-cert
 #   --tls-self-signed    Generate $ROOT/.ssclash/tls.{crt,key} (needs openssl)
+#   --from <path>        Install this local ssclash binary instead of downloading.
+#   --version <tag>      Download a specific release tag (default: latest).
 #   --no-mihomo          Skip Mihomo kernel download (install later from Settings).
+#   --update             Update the ssclash binary and Mihomo only. Keeps the
+#                        listen address, TLS, install root and service file.
+#   Mihomo is installed only when the release is newer than the kernel on disk.
 #   -h, --help           Show this help
 set -e
 
@@ -48,7 +53,10 @@ UI_ADDR=""
 TLS_CERT=""
 TLS_KEY=""
 TLS_SELF_SIGNED=0
+FROM=""
+VERSION="latest"
 SKIP_MIHOMO=0
+UPDATE=0
 ROOT_EXPLICIT=0
 
 say()  { echo "[ssclash] $*"; }
@@ -58,7 +66,7 @@ die()  { echo "[ssclash] ERROR: $*" >&2; exit 1; }
 
 assert_mihomo_ready() {
 	case "$MIHOMO_STATUS" in
-	installed*|skipped*) return 0 ;;
+	installed*|skipped*|kept*) return 0 ;;
 	esac
 	if [ -x "$CLASH_BIN" ] && "$CLASH_BIN" -v >/dev/null 2>&1; then
 		warn "Mihomo update failed ($MIHOMO_STATUS) — keeping existing kernel at $CLASH_BIN"
@@ -66,6 +74,28 @@ assert_mihomo_ready() {
 		return 0
 	fi
 	die "Mihomo kernel install failed ($MIHOMO_STATUS). Fix network/GitHub access and re-run, pass --no-mihomo to skip, or install the kernel from Settings → Mihomo kernel after SSClash is up."
+}
+
+# mihomo_installed_version prints vX.Y.Z from the kernel already on disk.
+mihomo_installed_version() {
+	[ -x "$CLASH_BIN" ] || return 0
+	"$CLASH_BIN" -v 2>/dev/null | sed -n 's/.*\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1
+}
+
+# version_gt is true when $1 is a strictly newer vX.Y.Z than $2.
+version_gt() {
+	_a=$(printf '%s\n' "$1" | sed 's/^v//')
+	_b=$(printf '%s\n' "$2" | sed 's/^v//')
+	case "$_a" in *.*.*) ;; *) return 1 ;; esac
+	case "$_b" in *.*.*) ;; *) return 1 ;; esac
+	_am=${_a%%.*}; _a=${_a#*.}; _ai=${_a%%.*}; _ap=${_a#*.}
+	_bm=${_b%%.*}; _b=${_b#*.}; _bi=${_b%%.*}; _bp=${_b#*.}
+	_ap=${_ap%%[!0-9]*}; _bp=${_bp%%[!0-9]*}
+	if [ "$_am" -gt "$_bm" ]; then return 0; fi
+	if [ "$_am" -lt "$_bm" ]; then return 1; fi
+	if [ "$_ai" -gt "$_bi" ]; then return 0; fi
+	if [ "$_ai" -lt "$_bi" ]; then return 1; fi
+	[ "$_ap" -gt "$_bp" ]
 }
 
 # Copy a non-executable file into place (init scripts, etc.).
@@ -151,7 +181,8 @@ path_noexec() {
 # old file is removed first so a small overlay does not hold two copies.
 # A failed copy deletes the partial file and never leaves .mihomo-new.* /
 # .ssclash-install.*. The 5th argument "1" runs "<file> -v" before replacing
-# a working binary when the source filesystem is executable.
+# a working binary. A failure in the download directory is retried beside the
+# install: that is the directory the binary will run from.
 install_checked_bin() {
 	_src="$1"
 	_dst="$2"
@@ -172,13 +203,16 @@ install_checked_bin() {
 	fi
 
 	_verified=0
+	_src_rejected=0
 	if [ "$_verify" = "1" ] && ! path_noexec "$_src"; then
 		chmod +x "$_src" 2>/dev/null || true
-		if ! "$_src" -v >/dev/null 2>&1; then
-			warn "$_label does not run on this host — keeping existing binary"
-			return 1
+		if "$_src" -v >/dev/null 2>&1; then
+			_verified=1
+		else
+			# /tmp is often noexec, or the host blocks new binaries there.
+			# The copy beside the install is the check that matters.
+			_src_rejected=1
 		fi
-		_verified=1
 	fi
 
 	if [ "$_free" -ge "$_need" ]; then
@@ -211,6 +245,11 @@ install_checked_bin() {
 		fi
 		chmod "$_mode" "$_dst"
 		return 0
+	fi
+
+	if [ "$_src_rejected" = "1" ]; then
+		warn "$_label could not be checked from the download directory, and there is not enough space to check it beside the install — keeping existing binary"
+		return 1
 	fi
 
 	if [ $((_free + _old)) -ge "$_need" ]; then
@@ -365,9 +404,14 @@ parse_install_options() {
 			--tls-key) TLS_KEY="${2:-}"; shift 2 ;;
 			--tls-key=*) TLS_KEY="${1#*=}"; shift ;;
 			--tls-self-signed) TLS_SELF_SIGNED=1; shift ;;
+			--from) FROM="${2:-}"; shift 2 ;;
+			--from=*) FROM="${1#*=}"; shift ;;
+			--version) VERSION="${2:-}"; shift 2 ;;
+			--version=*) VERSION="${1#*=}"; shift ;;
 			--no-mihomo) SKIP_MIHOMO=1; shift ;;
+			--update) UPDATE=1; shift ;;
 			-h|--help)
-				sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+				sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
 				exit 0 ;;
 			*) die "Unknown option: $1 (try --help)" ;;
 		esac
@@ -695,6 +739,17 @@ install_deps() {
 
 # ---- 5. Latest ssclash-go release (GitHub API) ------------------------------
 fetch_ssclash_release() {
+	if [ -n "$FROM" ]; then
+		return 0
+	fi
+	if [ "$VERSION" != "latest" ]; then
+		SSCLASH_TAG="$VERSION"
+		SSCLASH_BIN_URL="https://github.com/${REPO}/releases/download/${SSCLASH_TAG}/ssclash-linux-${SSCLASH_ASSET}"
+		SSCLASH_SVC_URL="https://github.com/${REPO}/releases/download/${SSCLASH_TAG}/ssclash-openwrt-service.tar.gz"
+		info "release: ${SSCLASH_TAG}"
+		info "binary: ${SSCLASH_BIN_URL##*/}"
+		return 0
+	fi
 	say "fetching latest ssclash-go release..."
 	RELEASE_JSON=$(github_get "$SSCLASH_API") || die "GitHub API request failed"
 	[ -n "$RELEASE_JSON" ] || die "empty GitHub API response"
@@ -720,6 +775,16 @@ fetch_ssclash_release() {
 
 # ---- 6. ssclash binary ------------------------------------------------------
 install_ssclash() {
+	if [ -n "$FROM" ]; then
+		[ -f "$FROM" ] || die "binary not found: $FROM"
+		say "installing local binary: $FROM"
+		install_bin "$FROM" "$SSCLASH_BIN" 755 "ssclash" || die "ssclash install failed"
+		if ! "$SSCLASH_BIN" version >/dev/null 2>&1 && ! "$SSCLASH_BIN" -h >/dev/null 2>&1; then
+			warn "ssclash installed but did not respond to version/-h (check arch)"
+		fi
+		say "installed ${SSCLASH_BIN}"
+		return 0
+	fi
 	say "downloading ssclash..."
 	TMP="$(mktemp)"
 	if ! GITHUB_GET_MAX_TIME=300 github_get "$SSCLASH_BIN_URL" "$TMP"; then
@@ -846,6 +911,16 @@ install_mihomo() {
 		return 0
 	fi
 	info "Mihomo: ${MIHOMO_VER}"
+	_have="$(mihomo_installed_version)"
+	if [ -n "$_have" ]; then
+		if version_gt "$MIHOMO_VER" "$_have"; then
+			info "Mihomo ${_have} is older than ${MIHOMO_VER} — updating"
+		else
+			info "Mihomo ${_have} is already current (release ${MIHOMO_VER}) — keeping it"
+			MIHOMO_STATUS="kept (${_have})"
+			return 0
+		fi
+	fi
 
 	MIHOMO_URL=$(mihomo_asset_url "$MIHOMO_VER" "$MIHOMO_ARCH") || {
 		warn "Mihomo asset for ${MIHOMO_ARCH} not found — install from Settings later"
@@ -893,10 +968,20 @@ install_mihomo() {
 
 # ---- MAIN -------------------------------------------------------------------
 parse_install_options "$@"
+if [ "$UPDATE" = 1 ]; then
+	if [ -n "$UI_BIND$UI_ADDR$TLS_CERT$TLS_KEY" ] || [ "$TLS_SELF_SIGNED" = 1 ] || [ "$UI_PORT" != "9091" ] || [ "$ROOT_EXPLICIT" = 1 ]; then
+		die "--update keeps address, TLS and install root; do not pass --port, --bind, --addr, --root or --tls-*"
+	fi
+	[ -x /etc/init.d/ssclash ] || die "--update: /etc/init.d/ssclash is missing; run a normal install"
+fi
 apply_install_paths
-validate_ui_port
-finalize_ui_addr
-prepare_tls_certs
+if [ "$UPDATE" = 1 ]; then
+	[ -x "$SSCLASH_BIN" ] || die "--update: $SSCLASH_BIN is missing; run a normal install"
+else
+	validate_ui_port
+	finalize_ui_addr
+	prepare_tls_certs
+fi
 
 [ "$(id -u)" = "0" ] || die "run as root"
 
@@ -906,30 +991,50 @@ ensure_fetcher
 detect_arch
 
 SSCLASH_WAS_ENABLED=0
-if [ -x /etc/init.d/ssclash ] && /etc/init.d/ssclash enabled 2>/dev/null; then
+if [ "$UPDATE" != 1 ] && [ -x /etc/init.d/ssclash ] && /etc/init.d/ssclash enabled 2>/dev/null; then
 	SSCLASH_WAS_ENABLED=1
 	info "service was enabled — will restore after upgrade"
+fi
+WAS_RUNNING=0
+if pidof ssclash >/dev/null 2>&1; then
+	WAS_RUNNING=1
 fi
 
 # Download release metadata and binaries while SSClash may still provide DNS/proxy.
 # stop_ssclash_for_upgrade runs only inside install_bin / before kernel replace.
 fetch_ssclash_release
-pkg_update
-install_deps
+if [ "$UPDATE" != 1 ]; then
+	pkg_update
+	install_deps
+fi
 
 install_ssclash
-install_service
-
-if [ "$SSCLASH_WAS_ENABLED" = "1" ]; then
-	/etc/init.d/ssclash enable
+if [ "$UPDATE" != 1 ]; then
+	install_service
+	if [ "$SSCLASH_WAS_ENABLED" = "1" ]; then
+		/etc/init.d/ssclash enable
+	fi
 fi
 
 install_mihomo
 assert_mihomo_ready
 
-/etc/init.d/ssclash enable
-/etc/init.d/ssclash start >/dev/null 2>&1 \
-	|| warn "service start skipped — open the web UI and press Start"
+if [ "$UPDATE" = 1 ]; then
+	_kept_addr=$(sed -n 's/^[[:space:]]*procd_set_param env SSCLASH_ADDR="\([^"]*\)".*/\1/p' /etc/init.d/ssclash | head -n 1)
+	_kept_cert=$(sed -n 's/^[[:space:]]*procd_set_param env SSCLASH_TLS_CERT="\([^"]*\)".*/\1/p' /etc/init.d/ssclash | head -n 1)
+	[ -n "$_kept_addr" ] && UI_ADDR="$_kept_addr"
+	[ -n "$_kept_cert" ] && TLS_CERT="$_kept_cert"
+	if [ "$WAS_RUNNING" = "1" ]; then
+		/etc/init.d/ssclash start >/dev/null 2>&1 \
+			|| warn "service start skipped — open the web UI and press Start"
+	else
+		say "service was not running — binary updated, service left stopped"
+	fi
+else
+	/etc/init.d/ssclash enable
+	/etc/init.d/ssclash start >/dev/null 2>&1 \
+		|| warn "service start skipped — open the web UI and press Start"
+fi
 
 IP=$(openwrt_lan_ip)
 UI_HOST=$(ui_effective_host "$IP")
@@ -944,4 +1049,8 @@ cat <<EOF
    ssclash:  ${SSCLASH_BIN} (${SSCLASH_TAG:-installed})
    Mihomo:   ${MIHOMO_STATUS}
 EOF
-say "done. Open ${SCHEME}://${UI_HOST}:${UI_P}, set the admin password, then Start."
+if [ "$UPDATE" = 1 ]; then
+	say "updated. Open ${SCHEME}://${UI_HOST}:${UI_P}"
+else
+	say "done. Open ${SCHEME}://${UI_HOST}:${UI_P}, set the admin password, then Start."
+fi

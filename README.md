@@ -60,7 +60,7 @@ The Go edition reads the same `config.yaml` and Mihomo kernel path. Rename direc
 
 ## Autoinstall scripts
 
-Each installer fetches the matching release binary, sets up `/opt/clash`, downloads the latest Mihomo kernel, and registers the OS service. Use `--no-mihomo` to skip the kernel download.
+Each installer fetches the matching release binary, sets up `/opt/clash`, downloads the Mihomo kernel when that release is newer than the one already installed, and registers the OS service. Use `--no-mihomo` to skip the kernel. Use `--update` on an existing install to replace only the SSClash binary and Mihomo; mode, listen address, TLS and the service file stay as they are.
 
 **OpenWrt** (run on the router):
 
@@ -99,6 +99,7 @@ wget -T 30 -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/ins
 | `--version <tag>` | Download a specific release tag (default: latest) |
 | `--from <path>` | Install a local binary instead of downloading |
 | `--no-mihomo` | Skip Mihomo kernel download (all installers) |
+| `--update` | Replace the SSClash binary and Mihomo only. Keeps mode, listen address, TLS and the service file. Requires an existing install. `--from`, `--version` and `--no-mihomo` are allowed. Do not combine with `--mode`, `--port`, `--bind`, `--addr`, `--root` or `--tls-*` |
 
 Examples:
 

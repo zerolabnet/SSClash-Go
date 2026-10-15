@@ -22,6 +22,9 @@
 #                                    that file is still missing.
 #   --from <path>   Install this local binary instead of downloading.
 #   --no-mihomo     Skip Mihomo kernel download (install later from Settings).
+#   --update        Update the ssclash binary and Mihomo only. Keeps the
+#                   existing mode, listen address, TLS and service file.
+#   Mihomo is installed only when the release is newer than the kernel on disk.
 #   --version <tag> Download a specific release tag (default: latest).
 #   --port <n>      Web UI port (default 9091; all interfaces)
 #   --bind <ip>     Bind web UI to this IP (with --port, default 9091)
@@ -45,6 +48,7 @@ FROM=""
 VERSION="latest"
 MODE=""
 SKIP_MIHOMO=0
+UPDATE=0
 MIHOMO_INSTALLED=0
 MIHOMO_STATUS="skipped"
 UI_BIND=""
@@ -61,7 +65,7 @@ warn() { echo "WARNING: $*" >&2; }
 # upgrade keeps exit 0 if an existing kernel at $CLASH_BIN still runs.
 assert_mihomo_ready() {
 	case "$MIHOMO_STATUS" in
-	installed*|skipped*) return 0 ;;
+	installed*|skipped*|kept*) return 0 ;;
 	esac
 	if [ -x "$CLASH_BIN" ] && "$CLASH_BIN" -v >/dev/null 2>&1; then
 		warn "Mihomo update failed ($MIHOMO_STATUS) — keeping existing kernel at $CLASH_BIN"
@@ -69,6 +73,28 @@ assert_mihomo_ready() {
 		return 0
 	fi
 	err "Mihomo kernel install failed ($MIHOMO_STATUS). Fix network/GitHub access and re-run, pass --no-mihomo to skip, or install the kernel from Settings → Mihomo kernel after SSClash is up."
+}
+
+# mihomo_installed_version prints vX.Y.Z from the kernel already on disk.
+mihomo_installed_version() {
+	[ -x "$CLASH_BIN" ] || return 0
+	"$CLASH_BIN" -v 2>/dev/null | sed -n 's/.*\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1
+}
+
+# version_gt is true when $1 is a strictly newer vX.Y.Z than $2.
+version_gt() {
+	_a=$(printf '%s\n' "$1" | sed 's/^v//')
+	_b=$(printf '%s\n' "$2" | sed 's/^v//')
+	case "$_a" in *.*.*) ;; *) return 1 ;; esac
+	case "$_b" in *.*.*) ;; *) return 1 ;; esac
+	_am=${_a%%.*}; _a=${_a#*.}; _ai=${_a%%.*}; _ap=${_a#*.}
+	_bm=${_b%%.*}; _b=${_b#*.}; _bi=${_b%%.*}; _bp=${_b#*.}
+	_ap=${_ap%%[!0-9]*}; _bp=${_bp%%[!0-9]*}
+	if [ "$_am" -gt "$_bm" ]; then return 0; fi
+	if [ "$_am" -lt "$_bm" ]; then return 1; fi
+	if [ "$_ai" -gt "$_bi" ]; then return 0; fi
+	if [ "$_ai" -lt "$_bi" ]; then return 1; fi
+	[ "$_ap" -gt "$_bp" ]
 }
 
 install_file() {
@@ -151,7 +177,8 @@ path_noexec() {
 # old file is removed first so a small overlay does not hold two copies.
 # A failed copy deletes the partial file and never leaves .mihomo-new.* /
 # .ssclash-install.*. The 5th argument "1" runs "<file> -v" before replacing
-# a working binary when the source filesystem is executable.
+# a working binary. A failure in the download directory is retried beside the
+# install: that is the directory the binary will run from.
 install_checked_bin() {
 	_src="$1"
 	_dst="$2"
@@ -172,13 +199,16 @@ install_checked_bin() {
 	fi
 
 	_verified=0
+	_src_rejected=0
 	if [ "$_verify" = "1" ] && ! path_noexec "$_src"; then
 		chmod +x "$_src" 2>/dev/null || true
-		if ! "$_src" -v >/dev/null 2>&1; then
-			warn "$_label does not run on this host — keeping existing binary"
-			return 1
+		if "$_src" -v >/dev/null 2>&1; then
+			_verified=1
+		else
+			# /tmp is often noexec, or the host blocks new binaries there.
+			# The copy beside the install is the check that matters.
+			_src_rejected=1
 		fi
-		_verified=1
 	fi
 
 	if [ "$_free" -ge "$_need" ]; then
@@ -211,6 +241,11 @@ install_checked_bin() {
 		fi
 		chmod "$_mode" "$_dst"
 		return 0
+	fi
+
+	if [ "$_src_rejected" = "1" ]; then
+		warn "$_label could not be checked from the download directory, and there is not enough space to check it beside the install — keeping existing binary"
+		return 1
 	fi
 
 	if [ $((_free + _old)) -ge "$_need" ]; then
@@ -352,6 +387,7 @@ while [ $# -gt 0 ]; do
 		--from) FROM="${2:-}"; shift 2 ;;
 		--from=*) FROM="${1#*=}"; shift ;;
 		--no-mihomo) SKIP_MIHOMO=1; shift ;;
+		--update) UPDATE=1; shift ;;
 		--version) VERSION="${2:-}"; shift 2 ;;
 		--version=*) VERSION="${1#*=}"; shift ;;
 		--port) UI_PORT="${2:-}"; shift 2 ;;
@@ -366,7 +402,7 @@ while [ $# -gt 0 ]; do
 		--tls-key=*) TLS_KEY="${1#*=}"; shift ;;
 		--tls-self-signed) TLS_SELF_SIGNED=1; shift ;;
 		-h|--help)
-			sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
+			sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
 			exit 0 ;;
 		*) echo "Unknown option: $1" >&2; exit 1 ;;
 	esac
@@ -462,29 +498,49 @@ ui_effective_host() {
 }
 
 validate_ui_port
-finalize_ui_addr
-prepare_tls_certs
+if [ "$UPDATE" = 1 ]; then
+	if [ -n "$MODE$UI_BIND$UI_ADDR$TLS_CERT$TLS_KEY" ] || [ "$TLS_SELF_SIGNED" = 1 ] || [ "$UI_PORT" != "9091" ]; then
+		err "--update keeps mode, address and TLS; do not pass --mode, --port, --bind, --addr or --tls-*"
+	fi
+	[ -x "$DEST" ] || err "--update: $DEST is missing; run a normal install"
+	[ -f "$UNIT" ] || err "--update: $UNIT is missing; run a normal install"
+else
+	finalize_ui_addr
+	prepare_tls_certs
+fi
 
 [ "$(id -u)" = "0" ] || err "Run as root (sudo)."
 command -v systemctl >/dev/null 2>&1 || err "systemd (systemctl) is required."
 
-# ---- Install mode -----------------------------------------------------------
-if [ -z "$MODE" ]; then
-	printf "Install mode:\n  [1] Gateway (transparent proxy: firewall, routing, DNS)\n  [2] Server  (Mihomo only, inbound listeners:)\nChoose [1/2] (default 1): "
-	read -r m </dev/tty 2>/dev/null || m=""
-	case "$m" in
-		2|server) MODE="server" ;;
-		*) MODE="gateway" ;;
-	esac
+# Captured before any download: a failed GitHub request stops the service.
+WAS_ACTIVE=0
+if [ "$UPDATE" = 1 ] && systemctl is-active --quiet ssclash.service 2>/dev/null; then
+	WAS_ACTIVE=1
 fi
-case "$MODE" in
-	gateway|server) ;;
-	*) err "Invalid --mode '$MODE' (use gateway or server)." ;;
-esac
-info "Install mode: $MODE"
+
+# ---- Install mode -----------------------------------------------------------
+if [ "$UPDATE" = 1 ]; then
+	MODE=$(sed -n 's/^OPERATING_MODE=//p' "$SETTINGS" 2>/dev/null | head -n 1)
+	[ -n "$MODE" ] || MODE="gateway"
+	info "Update: keeping install settings (mode: $MODE)"
+else
+	if [ -z "$MODE" ]; then
+		printf "Install mode:\n  [1] Gateway (transparent proxy: firewall, routing, DNS)\n  [2] Server  (Mihomo only, inbound listeners:)\nChoose [1/2] (default 1): "
+		read -r m </dev/tty 2>/dev/null || m=""
+		case "$m" in
+			2|server) MODE="server" ;;
+			*) MODE="gateway" ;;
+		esac
+	fi
+	case "$MODE" in
+		gateway|server) ;;
+		*) err "Invalid --mode '$MODE' (use gateway or server)." ;;
+	esac
+	info "Install mode: $MODE"
+fi
 
 # Gateway uses conntrack to drop stale DNS/DoT sessions and ipset for DoH and port filters.
-if [ "$MODE" = "gateway" ]; then
+if [ "$UPDATE" != 1 ] && [ "$MODE" = "gateway" ]; then
 	_missing=""
 	command -v conntrack >/dev/null 2>&1 || _missing="conntrack"
 	command -v ipset >/dev/null 2>&1 || _missing="${_missing:+$_missing }ipset"
@@ -586,6 +642,16 @@ install_mihomo() {
 		return 0
 	fi
 	info "Mihomo: ${MIHOMO_VER}"
+	_have="$(mihomo_installed_version)"
+	if [ -n "$_have" ]; then
+		if version_gt "$MIHOMO_VER" "$_have"; then
+			info "Mihomo ${_have} is older than ${MIHOMO_VER} — updating"
+		else
+			info "Mihomo ${_have} is already current (release ${MIHOMO_VER}) — keeping it"
+			MIHOMO_STATUS="kept (${_have})"
+			return 0
+		fi
+	fi
 
 	MIHOMO_URL=$(mihomo_asset_url "$MIHOMO_VER" "$MIHOMO_ARCH") || {
 		warn "Mihomo asset for ${MIHOMO_ARCH} not found — install from Settings later"
@@ -674,43 +740,55 @@ install_bin "$BIN_SRC" "$DEST" 755 "ssclash" || err "ssclash install failed (bad
 install_mihomo
 assert_mihomo_ready
 
-info "Recording operating mode in $SETTINGS"
-if [ -f "$SETTINGS" ] && grep -q '^OPERATING_MODE=' "$SETTINGS" 2>/dev/null; then
-	# Keep existing OPERATING_MODE on upgrade unless this install explicitly chose one
-	# via interactive prompt / --mode (MODE is always set before this point).
-	tmp="$SETTINGS.tmp"
-	sed "s/^OPERATING_MODE=.*/OPERATING_MODE=$MODE/" "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
+if [ "$UPDATE" = 1 ]; then
+	info "Keeping systemd unit $UNIT"
+	_kept_addr=$(sed -n 's/^Environment=SSCLASH_ADDR=//p' "$UNIT" | head -n 1)
+	_kept_cert=$(sed -n 's/^Environment=SSCLASH_TLS_CERT=//p' "$UNIT" | head -n 1)
+	[ -n "$_kept_addr" ] && UI_ADDR="$_kept_addr"
+	[ -n "$_kept_cert" ] && TLS_CERT="$_kept_cert"
+	if [ "$WAS_ACTIVE" = 1 ]; then
+		systemctl start ssclash.service
+	else
+		info "ssclash.service was not running — binary updated, service left stopped"
+	fi
 else
-	printf 'OPERATING_MODE=%s\n' "$MODE" >> "$SETTINGS"
-fi
+	info "Recording operating mode in $SETTINGS"
+	if [ -f "$SETTINGS" ] && grep -q '^OPERATING_MODE=' "$SETTINGS" 2>/dev/null; then
+		# Keep existing OPERATING_MODE on upgrade unless this install explicitly chose one
+		# via interactive prompt / --mode (MODE is always set before this point).
+		tmp="$SETTINGS.tmp"
+		sed "s/^OPERATING_MODE=.*/OPERATING_MODE=$MODE/" "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
+	else
+		printf 'OPERATING_MODE=%s\n' "$MODE" >> "$SETTINGS"
+	fi
 
-info "Installing systemd unit -> $UNIT"
-UNIT_EXTRA=""
-if [ -n "$UI_ADDR" ]; then
-	UNIT_EXTRA="${UNIT_EXTRA}
+	info "Installing systemd unit -> $UNIT"
+	UNIT_EXTRA=""
+	if [ -n "$UI_ADDR" ]; then
+		UNIT_EXTRA="${UNIT_EXTRA}
 Environment=SSCLASH_ADDR=${UI_ADDR}"
-	info "web UI listen: ${UI_ADDR}"
-else
-	UNIT_EXTRA="${UNIT_EXTRA}
+		info "web UI listen: ${UI_ADDR}"
+	else
+		UNIT_EXTRA="${UNIT_EXTRA}
 # Listen address (default :9091 on all interfaces when unset). Examples:
 #   :8443              — different port, all interfaces
 #   192.168.1.1:9091   — LAN IP only (not WAN)
 #   127.0.0.1:9091     — localhost only
 # Environment=SSCLASH_ADDR=:9091"
-fi
-if [ -n "$TLS_CERT" ]; then
-	UNIT_EXTRA="${UNIT_EXTRA}
+	fi
+	if [ -n "$TLS_CERT" ]; then
+		UNIT_EXTRA="${UNIT_EXTRA}
 Environment=SSCLASH_TLS_CERT=${TLS_CERT}
 Environment=SSCLASH_TLS_KEY=${TLS_KEY}"
-	info "HTTPS enabled: ${TLS_CERT}"
-else
-	UNIT_EXTRA="${UNIT_EXTRA}
+		info "HTTPS enabled: ${TLS_CERT}"
+	else
+		UNIT_EXTRA="${UNIT_EXTRA}
 # HTTPS web UI — uncomment after placing cert/key under $ROOT/.ssclash/:
 # Environment=SSCLASH_TLS_CERT=$ROOT/.ssclash/tls.crt
 # Environment=SSCLASH_TLS_KEY=$ROOT/.ssclash/tls.key"
-fi
+	fi
 
-cat > "$UNIT" <<EOF
+	cat > "$UNIT" <<EOF
 [Unit]
 Description=SSClash-Go proxy manager (Mihomo)
 Documentation=https://github.com/zerolabnet/SSClash-Go
@@ -731,21 +809,27 @@ ExecStopPost=-$DEST fw stop
 WantedBy=multi-user.target
 EOF
 
-info "Starting ssclash service"
-systemctl daemon-reload
-systemctl enable ssclash.service >/dev/null 2>&1 || true
-systemctl restart ssclash.service
+	info "Starting ssclash service"
+	systemctl daemon-reload
+	systemctl enable ssclash.service >/dev/null 2>&1 || true
+	systemctl restart ssclash.service
+fi
 
 LAN_IP="$(pick_lan_ipv4)"
 [ -n "$LAN_IP" ] || LAN_IP="<lan-ip>"
 UI_HOST=$(ui_effective_host "$LAN_IP")
 UI_P=$(ui_effective_port)
 SCHEME=$(ui_scheme)
+if [ "$UPDATE" = 1 ]; then
+	_done="updated"
+else
+	_done="installed"
+fi
 
 cat <<EOF
 
 ==========================================================================
- SSClash-Go installed ($MODE mode) — everything under $ROOT.
+ SSClash-Go $_done ($MODE mode) — everything under $ROOT.
 
  Summary:
    ssclash:  $DEST (${VERSION:-installed})

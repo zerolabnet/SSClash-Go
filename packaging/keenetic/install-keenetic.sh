@@ -19,6 +19,9 @@
 #   --from <path>   Install this local ssclash binary instead of downloading.
 #   --version <tag> Download a specific release tag (default: latest).
 #   --no-mihomo     Skip Mihomo kernel download (install later from Settings).
+#   --update        Update the ssclash binary and Mihomo only. Keeps the
+#                   listen address, TLS, settings and service file.
+#   Mihomo is installed only when the release is newer than the kernel on disk.
 #   --port <n>      Web UI port (default 9091; all interfaces)
 #   --bind <ip>     Bind web UI to this IP (with --port, default 9091)
 #   --addr <host:port>  Full SSCLASH_ADDR (overrides --port / --bind)
@@ -53,6 +56,7 @@ pidfile_alive() {
 FROM=""
 VERSION="latest"
 SKIP_MIHOMO=0
+UPDATE=0
 UI_BIND=""
 UI_ADDR=""
 TLS_CERT=""
@@ -72,7 +76,7 @@ die()  { echo "[ssclash] ERROR: $*" >&2; exit 1; }
 
 assert_mihomo_ready() {
 	case "$MIHOMO_STATUS" in
-	installed*|skipped*) return 0 ;;
+	installed*|skipped*|kept*) return 0 ;;
 	esac
 	if [ -x "$CLASH_BIN" ] && "$CLASH_BIN" -v >/dev/null 2>&1; then
 		warn "Mihomo update failed ($MIHOMO_STATUS) — keeping existing kernel at $CLASH_BIN"
@@ -80,6 +84,28 @@ assert_mihomo_ready() {
 		return 0
 	fi
 	die "Mihomo kernel install failed ($MIHOMO_STATUS). Fix network/GitHub access and re-run, pass --no-mihomo to skip, or install the kernel from Settings → Mihomo kernel after SSClash is up."
+}
+
+# mihomo_installed_version prints vX.Y.Z from the kernel already on disk.
+mihomo_installed_version() {
+	[ -x "$CLASH_BIN" ] || return 0
+	"$CLASH_BIN" -v 2>/dev/null | sed -n 's/.*\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1
+}
+
+# version_gt is true when $1 is a strictly newer vX.Y.Z than $2.
+version_gt() {
+	_a=$(printf '%s\n' "$1" | sed 's/^v//')
+	_b=$(printf '%s\n' "$2" | sed 's/^v//')
+	case "$_a" in *.*.*) ;; *) return 1 ;; esac
+	case "$_b" in *.*.*) ;; *) return 1 ;; esac
+	_am=${_a%%.*}; _a=${_a#*.}; _ai=${_a%%.*}; _ap=${_a#*.}
+	_bm=${_b%%.*}; _b=${_b#*.}; _bi=${_b%%.*}; _bp=${_b#*.}
+	_ap=${_ap%%[!0-9]*}; _bp=${_bp%%[!0-9]*}
+	if [ "$_am" -gt "$_bm" ]; then return 0; fi
+	if [ "$_am" -lt "$_bm" ]; then return 1; fi
+	if [ "$_ai" -gt "$_bi" ]; then return 0; fi
+	if [ "$_ai" -lt "$_bi" ]; then return 1; fi
+	[ "$_ap" -gt "$_bp" ]
 }
 
 install_file() {
@@ -162,7 +188,8 @@ path_noexec() {
 # old file is removed first so a small overlay does not hold two copies.
 # A failed copy deletes the partial file and never leaves .mihomo-new.* /
 # .ssclash-install.*. The 5th argument "1" runs "<file> -v" before replacing
-# a working binary when the source filesystem is executable.
+# a working binary. A failure in the download directory is retried beside the
+# install: that is the directory the binary will run from.
 install_checked_bin() {
 	_src="$1"
 	_dst="$2"
@@ -183,13 +210,16 @@ install_checked_bin() {
 	fi
 
 	_verified=0
+	_src_rejected=0
 	if [ "$_verify" = "1" ] && ! path_noexec "$_src"; then
 		chmod +x "$_src" 2>/dev/null || true
-		if ! "$_src" -v >/dev/null 2>&1; then
-			warn "$_label does not run on this host — keeping existing binary"
-			return 1
+		if "$_src" -v >/dev/null 2>&1; then
+			_verified=1
+		else
+			# /tmp is often noexec, or the host blocks new binaries there.
+			# The copy beside the install is the check that matters.
+			_src_rejected=1
 		fi
-		_verified=1
 	fi
 
 	if [ "$_free" -ge "$_need" ]; then
@@ -222,6 +252,11 @@ install_checked_bin() {
 		fi
 		chmod "$_mode" "$_dst"
 		return 0
+	fi
+
+	if [ "$_src_rejected" = "1" ]; then
+		warn "$_label could not be checked from the download directory, and there is not enough space to check it beside the install — keeping existing binary"
+		return 1
 	fi
 
 	if [ $((_free + _old)) -ge "$_need" ]; then
@@ -356,6 +391,7 @@ while [ $# -gt 0 ]; do
 		--version) VERSION="${2:-}"; shift 2 ;;
 		--version=*) VERSION="${1#*=}"; shift ;;
 		--no-mihomo) SKIP_MIHOMO=1; shift ;;
+		--update) UPDATE=1; shift ;;
 		--port) UI_PORT="${2:-}"; shift 2 ;;
 		--port=*) UI_PORT="${1#*=}"; shift ;;
 		--bind) UI_BIND="${2:-}"; shift 2 ;;
@@ -368,7 +404,7 @@ while [ $# -gt 0 ]; do
 		--tls-key=*) TLS_KEY="${1#*=}"; shift ;;
 		--tls-self-signed) TLS_SELF_SIGNED=1; shift ;;
 		-h|--help)
-			sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+			sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
 			exit 0 ;;
 		*) die "Unknown option: $1" ;;
 	esac
@@ -462,9 +498,17 @@ configure_keenetic_init() {
 	fi
 }
 
-validate_ui_port
-finalize_ui_addr
-prepare_tls_certs
+if [ "$UPDATE" = 1 ]; then
+	if [ -n "$UI_BIND$UI_ADDR$TLS_CERT$TLS_KEY" ] || [ "$TLS_SELF_SIGNED" = 1 ] || [ "$UI_PORT" != "9091" ]; then
+		die "--update keeps address and TLS; do not pass --port, --bind, --addr or --tls-*"
+	fi
+	[ -x "$SSCLASH_BIN" ] || die "--update: $SSCLASH_BIN is missing; run a normal install"
+	[ -x "$INIT_DEST" ] || die "--update: $INIT_DEST is missing; run a normal install"
+else
+	validate_ui_port
+	finalize_ui_addr
+	prepare_tls_certs
+fi
 
 # ---- Environment checks ----------------------------------------------------
 [ "$(id -u)" = "0" ] || die "run as root"
@@ -634,6 +678,16 @@ install_mihomo() {
 		return 0
 	fi
 	info "Mihomo: ${MIHOMO_VER}"
+	_have="$(mihomo_installed_version)"
+	if [ -n "$_have" ]; then
+		if version_gt "$MIHOMO_VER" "$_have"; then
+			info "Mihomo ${_have} is older than ${MIHOMO_VER} — updating"
+		else
+			info "Mihomo ${_have} is already current (release ${MIHOMO_VER}) — keeping it"
+			MIHOMO_STATUS="kept (${_have})"
+			return 0
+		fi
+	fi
 
 	MIHOMO_URL=$(mihomo_asset_url "$MIHOMO_VER" "$MIHOMO_ARCH") || {
 		warn "Mihomo asset for ${MIHOMO_ARCH} not found — install from Settings later"
@@ -958,40 +1012,56 @@ lan_ip() {
 
 # ---- MAIN --------------------------------------------------------------------
 say "SSClash-Go installer (Keenetic / Entware)"
+WAS_RUNNING=0
+if pidfile_alive || pidof ssclash >/dev/null 2>&1; then
+	WAS_RUNNING=1
+fi
 ensure_fetcher
-check_netfilter_modules
-ensure_iptables_userspace
-ensure_ip_full
-ensure_entware_tool conntrack conntrack
-ensure_entware_tool ipset ipset
+if [ "$UPDATE" != 1 ]; then
+	check_netfilter_modules
+	ensure_iptables_userspace
+	ensure_ip_full
+	ensure_entware_tool conntrack conntrack
+	ensure_entware_tool ipset ipset
+fi
 detect_arch
 fetch_ssclash_release
 install_ssclash
-write_settings
-install_init
+if [ "$UPDATE" != 1 ]; then
+	write_settings
+	install_init
+fi
 install_mihomo
 assert_mihomo_ready
-start_service
+if [ "$UPDATE" = 1 ]; then
+	_kept_addr=$(sed -n 's/^[[:space:]]*export SSCLASH_ADDR="\([^"]*\)".*/\1/p' "$INIT_DEST" | head -n 1)
+	_kept_cert=$(sed -n 's/^[[:space:]]*export SSCLASH_TLS_CERT="\([^"]*\)".*/\1/p' "$INIT_DEST" | head -n 1)
+	[ -n "$_kept_addr" ] && UI_ADDR="$_kept_addr"
+	[ -n "$_kept_cert" ] && TLS_CERT="$_kept_cert"
+	if [ "$WAS_RUNNING" = 1 ]; then
+		start_service
+	else
+		say "service was not running — binary updated, service left stopped"
+	fi
+else
+	start_service
+fi
 
 IP=$(lan_ip)
 [ -n "$IP" ] || IP="<router-ip>"
 UI_HOST=$(ui_effective_host "$IP")
 UI_P=$(ui_effective_port)
 SCHEME=$(ui_scheme)
-
-cat <<EOF
-
-==========================================================================
- SSClash-Go installed (gateway mode) under $ROOT.
-
- Summary:
-   ssclash:  ${SSCLASH_BIN} (${SSCLASH_TAG:-installed})
-   Mihomo:   ${MIHOMO_STATUS}
-
+if [ "$UPDATE" = 1 ]; then
+	_title="SSClash-Go updated (gateway mode) under $ROOT."
+	_defaults=" Settings in $SETTINGS were left unchanged."
+else
+	_title="SSClash-Go installed (gateway mode) under $ROOT."
+	_defaults="
  Before first Start, verify in Keenetic web UI (Components):
    - Netfilter subsystem kernel modules — enabled (reboot after enabling)
    - USB / Entware / OPKG — working
-   - ip-full if `ip rule` fails (installer tries opkg install ip-full)
+   - ip-full if \`ip rule\` fails (installer tries opkg install ip-full)
    - conntrack and ipset (installer tries opkg install; needed for DNS session flush and DoH/ipset rules)
    - iptables userspace (xtables): firmware /sbin/iptables when present, else
      opkg install iptables-legacy or opkg install iptables (iptables -V must NOT say nf_tables)
@@ -999,7 +1069,18 @@ cat <<EOF
  Defaults written only if missing in $SETTINGS:
    FIREWALL_BACKEND=iptables, PROXY_MODE=hybrid, ENABLE_DNS_REDIRECT=true,
    AUTO_FAKEIP_WHITELIST=true
-   (AUTO_FAKEIP_WHITELIST applies only when config.yaml uses fake-ip whitelist)
+   (AUTO_FAKEIP_WHITELIST applies only when config.yaml uses fake-ip whitelist)"
+fi
+
+cat <<EOF
+
+==========================================================================
+ $_title
+
+ Summary:
+   ssclash:  ${SSCLASH_BIN} (${SSCLASH_TAG:-installed})
+   Mihomo:   ${MIHOMO_STATUS}
+${_defaults}
 
  1. Open web UI:  ${SCHEME}://${UI_HOST}:${UI_P}
     Set the admin password on first visit.
