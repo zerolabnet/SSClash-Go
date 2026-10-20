@@ -249,6 +249,14 @@ policy** — select policies from the router (Internet → Connection Policies).
 NDMS connmarks in firewall rules so only devices assigned to those policies enter the
 proxy path. This includes **TUN**.
 
+**RCI access token (KeeneticOS 5.2+):** From firmware **5.2** onward, local RCI on
+`127.0.0.1:79` requires an **RCI access token**. SSClash uses RCI for
+access-policy and hotspot client names. Settings → **Keenetic access policy** → **RCI access
+token** — create a token in the router web UI under **Users and access**, paste it here, and
+**Save**. Leave empty on older KeeneticOS that still accepts loopback RCI without a token. If
+RCI is missing or rejected, SSClash falls back to `ndmc`; lists still load but names may not
+match the router web UI.
+
 **TPROXY on Keenetic and TCP 443:** KeeneticOS uses port 443 internally for `xt_TPROXY`;
 LAN TCP to `:443` often never reaches SSClash (TPROXY counters stay at zero). Use **HYBRID**
 (default), move router management HTTPS off TCP 443 in the Keenetic web UI (any port
