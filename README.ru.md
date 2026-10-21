@@ -20,7 +20,7 @@
 - **Один бинарник, все архитектуры.** Готовые статические бинарники для amd64, arm64, armv5/6/7, 386, loong64, riscv64, ppc64le, s390x и вариантов mips/mipsle. Веб-интерфейс встроен в демон.
 - **Встроенный веб-UI** — **Конфигурация**, **Настройки**, **Списки правил**, встроенная панель **Proxies / Connections / Rules / Core Logs** и **Системный лог** — редактирование YAML, управление службой, интерфейсами/ядром и потоки в реальном времени.
 - **Внешнее ядро Mihomo**, полностью управляемое демоном: загрузка/обновление с GitHub Releases (архитектура определяется автоматически), запуск/остановка/перезапуск, проверка `clash -t` и горячая перезагрузка через API Mihomo.
-- **Собственный движок файрвола**: атомарный ruleset `nft -f -` (`table inet clash`) или fallback iptables/ipset; режимы **TPROXY / HYBRID / TUN / MIXED / MIXED2**; модели exclude/explicit; блокировка QUIC; опциональный запрет форвардинга IPv6; опциональный kill switch, пока Mihomo не запущен; опциональная блокировка DoT/DoH при перехвате DNS Mihomo; зарезервированные сети назначения; фильтр портов; обход LAN-клиентов; оптимизация fake-ip whitelist; обход IP серверов подписок.
+- **Собственный движок файрвола**: атомарный ruleset `nft -f -` (`table inet clash`) или fallback iptables/ipset; режимы **TPROXY / HYBRID / TUN / MIXED / MIXED2**; модели exclude/explicit; блокировка QUIC; опциональный запрет форвардинга IPv6; опциональный kill switch, пока Mihomo не запущен; опциональная блокировка DoT/DoH при перехвате DNS Mihomo; зарезервированные сети назначения; фильтр портов; обход LAN-клиентов; опциональное проксирование собственного трафика роутера; опциональные DSCP bypass и force proxy; оптимизация fake-ip whitelist; обход IP серверов подписок.
 - **Policy routing** через `ip rule`/`ip route` (таблицы `100`/`101`, метки `0x1`/`0x2`/`0x3` на OpenWrt и Linux; на Keenetic `0x80000000`/`0x10000000` с маской `0x90000000`).
 - **Безопасность по умолчанию**: пароль администратора при первом запуске (PBKDF2-HMAC-SHA256), HMAC-сессии, защита CSRF, опциональный HTTPS.
 - **Платформы**: OpenWrt, обычный Linux (systemd) и Keenetic (Entware).
@@ -148,12 +148,12 @@ opkg install kmod-tun iptables-mod-tproxy
 
 ### Шаг 3: Загрузка и установка SSClash
 
-Выберите бинарник для вашей архитектуры в [GitHub Releases](https://github.com/zerolabnet/SSClash-Go/releases):
+Выберите бинарник для вашей архитектуры в [GitHub Releases](https://github.com/zerolabnet/SSClash-Go/releases). Подставьте вместо `<tag>` тег этого релиза:
 
 ```bash
 mkdir -p /opt/clash/bin
 curl -L -o /opt/clash/bin/ssclash \
-  https://github.com/zerolabnet/SSClash-Go/releases/download/v1.0.0/ssclash-linux-arm64
+  https://github.com/zerolabnet/SSClash-Go/releases/download/<tag>/ssclash-linux-arm64
 chmod +x /opt/clash/bin/ssclash
 ```
 
@@ -161,10 +161,27 @@ chmod +x /opt/clash/bin/ssclash
 
 ```bash
 curl -L -o /tmp/ssclash-openwrt-service.tar.gz \
-  https://github.com/zerolabnet/SSClash-Go/releases/download/v1.0.0/ssclash-openwrt-service.tar.gz
+  https://github.com/zerolabnet/SSClash-Go/releases/download/<tag>/ssclash-openwrt-service.tar.gz
 tar -xzf /tmp/ssclash-openwrt-service.tar.gz -C /
 /etc/init.d/ssclash enable
 /etc/init.d/ssclash start
+```
+
+### Офлайн-обновление
+
+Первая установка обращается к репозиторию пакетов (`opkg update` или `apk update`) и останавливается, если он недоступен. Уже стоящие на роутере пакеты этот шаг не отменяют.
+
+Уже установленную копию можно обновить без GitHub. Сохраните `packaging/openwrt/install-openwrt.sh` из этого репозитория. На роутере заранее должен быть `curl` или `wget-ssl`: штатный `uclient-fetch` (обычный `wget`) заставляет скрипт обновить индекс пакетов и остановиться. Новое ядро Mihomo положите в `/opt/clash/bin/clash` (`gunzip` подходящего `mihomo-linux-*.gz` и `chmod 755`). `--update` сохраняет init-скрипт, адрес, TLS и каталог установки.
+
+```bash
+sh /tmp/install-openwrt.sh --update --from /tmp/ssclash-linux-arm64 --no-mihomo
+```
+
+Чтобы заменить init-скрипт, остановите службу и распакуйте `ssclash-openwrt-service.tar.gz` (внутри `etc/init.d/ssclash`):
+
+```bash
+/etc/init.d/ssclash stop
+tar -xzf /tmp/ssclash-openwrt-service.tar.gz -C /
 ```
 
 ### DNS на OpenWrt
@@ -202,6 +219,20 @@ tar -xzf /tmp/ssclash-openwrt-service.tar.gz -C /
 curl -fsSL https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | sudo sh -s -- --from ./ssclash-linux-amd64 --mode gateway
 ```
 
+### Офлайн-установка
+
+Сохраните `packaging/linux/install-linux.sh` из этого репозитория. `install-ssclash-go.sh` по-прежнему скачивает этот скрипт с GitHub. Unit systemd скрипт пишет сам, отдельного архива службы в релизе нет. Ядро Mihomo положите в `/opt/clash/bin/clash` (`gunzip` подходящего `mihomo-linux-*.gz` и `chmod 755`). Имя бинарника зависит от `uname -m` (`x86_64` → `ssclash-linux-amd64`, `aarch64` → `ssclash-linux-arm64`). `nft` или `iptables`, а также `ip`, уже должны быть установлены. В режиме gateway скрипт пытается поставить `conntrack` и `ipset` через `apt-get`, если этих команд нет; при недоступном репозитории дистрибутива поставьте пакеты сами. Ошибка `apt-get` — предупреждение, установка продолжается.
+
+```bash
+sudo sh /tmp/install-linux.sh --from /tmp/ssclash-linux-amd64 --mode gateway --no-mihomo
+```
+
+Уже установленная копия сохраняет режим, адрес, TLS и unit:
+
+```bash
+sudo sh /tmp/install-linux.sh --update --from /tmp/ssclash-linux-amd64 --no-mihomo
+```
+
 Режим gateway применяет файрвол, policy routing и перехват DNS (зависит от платформы) при **Start** (OpenWrt: dnsmasq upstream по умолчанию; Keenetic/Linux: firewall redirect). Режим server запускает только Mihomo. Свежая установка `--mode server` записывает в `config.yaml` пример входящего `listeners:`; уже существующий файл не трогает.
 
 ## Ручная установка — Keenetic
@@ -215,6 +246,37 @@ curl -fsSL https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-
 opkg update && opkg install wget-ssl ca-certificates
 export PATH="/opt/bin:/opt/sbin:$PATH"
 wget -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash
+```
+
+### Офлайн-установка
+
+Так ставят SSClash, когда с роутера нет доступа к GitHub и к репозиторию Entware. Файлы скачивают на другом компьютере и копируют на роутер (SCP или USB). `install-ssclash-go.sh` по-прежнему загружает платформенный скрипт с GitHub, поэтому офлайн запускают `packaging/keenetic/install-keenetic.sh`, сохранённый из этого репозитория.
+
+Файлы релиза выбирают по `uname -m`: `aarch64` / `arm64` → `ssclash-linux-arm64` и `mihomo-linux-arm64-<tag>.gz`; `armv7l` → `armv7`; `mipsel` или `mips` → `hardfloat`, если в `opkg print-architecture` есть `hard`, иначе `softfloat`. Тег и архив ядра Mihomo берут из релизов Mihomo. В релизе SSClash также есть `ssclash-keenetic-service.tar.gz`: внутри `opt/etc/init.d/S99ssclash`.
+
+Пакеты Entware, которые установщик иначе взял бы из feed, и все пакеты из их строк `Depends:` для этой архитектуры: `iptables-legacy` (или `iptables`, если `iptables -V` не содержит `nf_tables`), `ip-full`, `conntrack`, `ipset`. `iptables-legacy` не нужен, если штатный `/sbin/iptables` уже собран как xtables. `wget-ssl` и `ca-certificates` нужны только онлайн-установщику. В `PATH` всё равно должны быть BusyBox `wget` или `curl`: скрипт проверяет, что одна из этих команд есть.
+
+Init-скрипт кладут рядом с установщиком. С `--from` архив службы не скачивается.
+
+```bash
+mkdir -p /tmp/ssclash-offline/etc/init.d /tmp/ssclash-offline/ipk /tmp/ssclash-svc
+# с компьютера: install-keenetic.sh, бинарник, файлы .ipk, архив службы
+tar -xzf /tmp/ssclash-keenetic-service.tar.gz -C /tmp/ssclash-svc
+cp /tmp/ssclash-svc/opt/etc/init.d/S99ssclash /tmp/ssclash-offline/etc/init.d/
+export PATH="/opt/bin:/opt/sbin:$PATH"
+opkg install /tmp/ssclash-offline/ipk/*.ipk
+mkdir -p /opt/clash/bin
+gunzip -c /tmp/mihomo-linux-arm64-<tag>.gz > /opt/clash/bin/clash
+chmod 755 /opt/clash/bin/clash
+sh /tmp/ssclash-offline/install-keenetic.sh --from /tmp/ssclash-offline/ssclash-linux-arm64 --no-mihomo
+```
+
+Установщик копирует бинарник в `/opt/clash/bin/ssclash`, а `S99ssclash` — в `/opt/etc/init.d/S99ssclash`. `--no-mihomo` не трогает уже положенный `/opt/clash/bin/clash`. При офлайн-обновлении ядра этот файл заменяют так же.
+
+Уже установленную копию обновляют без GitHub. `--update` сохраняет init-скрипт, адрес, TLS и настройки:
+
+```bash
+sh /tmp/ssclash-offline/install-keenetic.sh --update --from /tmp/ssclash-offline/ssclash-linux-arm64 --no-mihomo
 ```
 
 По умолчанию: **HYBRID** + Exclude, включён **Auto fake-ip whitelist**. NAT делает KeeneticOS.
@@ -287,21 +349,23 @@ SSClash перезаписывает `config.yaml` (порты/блоки как
 
 Скрипты автоустановки скачивают последнее ядро Mihomo автоматически. На маленьком flash новое ядро заменяет старое, а не хранится второй копией; неудачное обновление удаляет `.mihomo-new.*`, а не оставляет его забивать диск. Также можно управлять из веб-UI или установить вручную (ниже).
 
-В веб-UI: **Настройки** → **Ядро Mihomo** → **Загрузить последнее ядро**. SSClash:
+В веб-UI: **Настройки** → **Ядро Mihomo**. Выберите **Release channel** (**Stable** по умолчанию — последний не-пререлиз; **Alpha** — файлы `mihomo-linux-*-alpha-*`), затем **Check updates** или **Download / Update**. SSClash:
 
 - Определит архитектуру устройства
-- Загрузит последний совместимый релиз Mihomo
+- Проверит обновления или загрузит ядро выбранного канала (Stable: последний не-пререлиз; Alpha: `mihomo-linux-*-alpha-*`)
 - Установит его в `/opt/clash/bin/clash`
 - Покажет статус и версию ядра
 
-**Важно:** Перезапустите службу Clash после установки ядра.
+**Важно:** Перезапустите службу SSClash после установки ядра.
 
 ### Ручная установка ядра (необязательно)
+
+Подставьте вместо `<tag>` тег релиза Mihomo. Имя архива — `mihomo-linux-<arch>-<tag>.gz`; ниже пример для arm64.
 
 ```bash
 cd /opt/clash/bin
 curl -L -o clash.gz \
-  https://github.com/MetaCubeX/mihomo/releases/download/v1.19.29/mihomo-linux-arm64-v1.19.29.gz
+  https://github.com/MetaCubeX/mihomo/releases/download/<tag>/mihomo-linux-arm64-<tag>.gz
 gunzip clash.gz && chmod +x clash
 ```
 
@@ -323,12 +387,15 @@ SSClash предлагает два режима:
 - Проще всего для «прокси на весь LAN», если не нужно делить сети
 - Куда идёт трафик, по-прежнему решают правила Mihomo в `config.yaml`
 
+В режиме исключения **Auto-detect WAN** добавляет обнаруженный WAN в список обхода, а **Auto-detect LAN** неактивен; в явном режиме **Auto-detect LAN** добавляет обнаруженную LAN в список включаемых интерфейсов, а **Auto-detect WAN** неактивен.
+
 ### Дополнительные настройки
 
 - **OpenWrt dnsmasq upstream** — Настройки → DNS (дефолт на OpenWrt). Направляет dnsmasq на Mihomo `:7874`; взаимоисключим с firewall redirect (см. **DNS на OpenWrt** выше).
 - **Firewall redirect** — Настройки → DNS. Дефолт на Keenetic и обычном Linux; опционально на OpenWrt. Перенаправляет LAN `:53` (TCP/UDP) на Mihomo `:7874`.
 - **Block DoT / Block DoH (dibdot) / Block DoH (custom)** — Настройки → DNS при активном перехвате DNS Mihomo; см. [Блокировка DoT / DoH](#блокировка-dot--doh).
 - **Proxy router traffic** — Настройки → Options, только Gateway, по умолчанию выключен. Исходящий IPv4 TCP/UDP самого роутера идёт в Mihomo с теми же исключениями файрвола, что у клиентов LAN (зарезервированные сети, обход клиентов, фильтр портов, fake-ip whitelist). Политики доступа Keenetic не распространяются на собственный трафик роутера — по политике отбираются только клиенты LAN. В HYBRID и MIXED2 TCP роутера уходит DNAT на 127.0.0.1:7893, в остальных режимах пакеты маркируются. При перенаправлении DNS файрволом порт 53 самого роутера тоже уходит в Mihomo, иначе fake-ip для роутера не работает. Kill switch не применяется (это drop только форварда LAN). Выключение вступает в силу на следующем Apply.
+- **DSCP marks** — Настройки → Options, только Gateway, выключено, пока в список не добавлено значение. DSCP — метка в IP-пакете. Её задают в операционной системе клиента, а здесь указывают тот же номер: так отдельное приложение или устройство можно вывести из прокси или принудительно отправить в него, оставив остальной LAN как настроен. **DSCP bypass** (пример 62) обходит перехват, перенаправление DNS файрволом, блокировку QUIC и Block DoH/DoT. **DSCP force proxy** (пример 63) обходит выбор интерфейса и политику доступа Keenetic, не учитывает fake-ip и список разрешённых портов и не обходит блокировку QUIC и Block DoH/DoT. Вступает в силу на следующем Apply.
 - **Kill switch** — Настройки → Options, только Gateway, по умолчанию выключен. Пока опция включена и Mihomo не запущен, клиенты LAN не выходят в интернет: форвардинг к WAN отбрасывается. Панель, SSH и собственный трафик роутера работают. Уже существующие пробросы портов с WAN (DNAT) проходят. Если WAN известен, обмен LAN–LAN остаётся; если нет — отбрасывается весь форвардинг. Форвардинг IPv6 в этом окне тоже отбрасывается. Включение при уже работающем прокси ничего не меняет до следующего Stop. Выключение снимает запрет сразу. В режиме Server запрет не ставится. На Keenetic хук NDMS остаётся, пока опция включена. На OpenWrt include `firewall.ssclash_ks` (`/var/etc/ssclash-ks.include`) ставит запрет снова после перезагрузки firewall4. На обычном Linux запрет держится, пока его не снимет SSClash. Окно после включения роутера до старта процесса SSClash и SIGKILL до cleanup не закрываются.
 - **Drop forwarded IPv6** — Настройки → Options, только Gateway, по умолчанию выключен. Отбрасывает IPv6, который роутер форвардил бы дальше, включая исключённые интерфейсы и направление WAN→LAN. Собственный IPv6 роутера остаётся. Ответы AAAA не фильтруются, форвардинг IPv6 в системе не выключается. Если нет `ip6tables`, Apply проходит, в логе gateway — предупреждение.
 - **Блокировать QUIC-трафик** — блокирует UDP/443 для повышения эффективности прокси (YouTube и т.п.)
@@ -339,6 +406,9 @@ SSClash предлагает два режима:
 - **Добавить HWID-заголовки к подпискам** — 16-символьный HWID для Remnawave на запросах proxy-provider (также при загрузке полного конфига по URL)
 - **Резервное копирование** — экспорт/импорт настроек и списков из `.ssclash/` (включая `doh-custom.txt`) на странице Настроек
 - **Порт и TLS веб-UI** — через флаги установки или `SSCLASH_ADDR` / `SSCLASH_TLS_*` в init/systemd
+- **NAT masquerade on WAN** — Настройки → Linux gateway host, только обычный Linux в режиме Gateway. Runtime MASQUERADE для клиентов LAN, у которых этот хост — шлюз по умолчанию. Применяется при старте прокси; в `/etc` ничего не пишется. WAN-интерфейс необязателен: пустое поле — текущий интерфейс маршрута по умолчанию.
+- **Periodic maintenance** — отдельная карточка в Настройках. **Auto-refresh subscription IPs** заново резолвит IP серверов прокси и обновляет наборы обхода в файрволе (как обновление при WAN-up); в режиме Server тот же переключатель только обновляет локальный кэш. **Auto-refresh fake-ip whitelist** — только Gateway: пока прокси запущен, заново собирает CIDR whitelist из тех же источников, что и Auto fake-ip whitelist, и синхронизирует nft/ipset. **Interval (minutes)** по умолчанию 30, диапазон 5–1440, действует пока прокси запущен.
+- **Firewall backend** — Настройки → Traffic interception. На OpenWrt и обычном Linux: **Auto**, **nftables** или **iptables**. На Keenetic переключателя нет.
 
 <p align="center">
   <img src=".github/assets/images/screenshots/scr-02.png" alt="Настройки — режим шлюза на OpenWrt" width="800">
@@ -447,9 +517,13 @@ SSClash предлагает два режима:
 ```
 ssclash [serve]              запуск демона + веб-UI (по умолчанию)
 ssclash fw start|stop|update применить / снять / обновить файрвол и маршрутизацию
-ssclash fw diagnose          intercept, политики, счётчики iptables (диагностика)
+ssclash fw validate-policy   проверить policy routing
+ssclash fw repair-policy     восстановить policy routing
+ssclash fw validate-forward  проверить правила форвардинга
+ssclash fw repair-forward    восстановить правила форвардинга
 ssclash fw ndm-reload        восстановить jump'ы SSClash после пересборки netfilter KeeneticOS
 ssclash fw sync-killswitch   поставить или снять kill switch шлюза (код 10: запрет включён)
+ssclash fw diagnose          intercept, политики, счётчики iptables (диагностика)
 ssclash hotplug wan|tun      обработчики WAN-up или TUN-add (вручную / cron)
 ssclash cleanup              убрать сироту Mihomo и файрвол после аварийной остановки
 ssclash setpass [password]   задать пароль администратора
@@ -474,6 +548,8 @@ TPROXY порт `7894`, HYBRID TCP redirect порт `7893` (`redir-port`), DNS 
 | `sha256sums.txt` | Контрольные суммы SHA-256 |
 
 ## Удаление
+
+Перед остановкой службы выключите **Kill switch** и нажмите **Save & Apply**, чтобы снялись запрет и include файрвола OpenWrt.
 
 **OpenWrt:**
 
