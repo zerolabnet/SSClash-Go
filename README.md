@@ -342,6 +342,12 @@ When **Save** in Settings changes proxy mode or TUN stack, SSClash rewrites the 
 `config.yaml` profile if it disagrees (same ports/blocks as the table above), validates
 with `clash -t`, then restarts Mihomo when the service is running.
 
+## Update SSClash from Settings
+
+Open **Settings**. The **SSClash** card is above **Mihomo kernel**. Click **Check updates** to read the latest stable GitHub release. Click **Download / Update** to replace `/opt/clash/bin/ssclash` and restart the service. SSClash does not check for updates in the background.
+
+The router must reach GitHub. On Linux, the service account must be allowed to run `systemctl restart ssclash.service`. That is the same permission the service restart already requires.
+
 ## Step 4: Mihomo kernel management
 
 The autoinstall scripts download the latest Mihomo kernel automatically. On a small flash filesystem the new kernel replaces the old one instead of keeping both copies, and a failed update removes `.mihomo-new.*` instead of leaving it to fill the disk. Autoinstall streams Mihomo onto the install filesystem and does not keep a second full uncompressed copy in `/tmp`. You can also manage it from the web UI or install manually (see below).
