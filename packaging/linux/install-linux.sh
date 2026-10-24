@@ -172,13 +172,14 @@ path_noexec() {
 }
 
 # install_checked_bin copies src onto dst.
-# When the destination filesystem has room for the new file plus 1 MiB, the
-# new file is staged beside the old one and swapped with mv. Otherwise the
-# old file is removed first so a small overlay does not hold two copies.
+# When free space covers the new file plus 1 MiB, the new file is staged
+# beside the old one and swapped with mv. Otherwise the old file is removed
+# first when free space plus the old file's size covers the new file. The
+# 1 MiB margin is only for holding both copies during the swap.
 # A failed copy deletes the partial file and never leaves .mihomo-new.* /
 # .ssclash-install.*. The 5th argument "1" runs "<file> -v" before replacing
-# a working binary. A failure in the download directory is retried beside the
-# install: that is the directory the binary will run from.
+# a working binary. If the download directory cannot run it, the copy on the
+# install path is checked instead.
 install_checked_bin() {
 	_src="$1"
 	_dst="$2"
@@ -199,15 +200,10 @@ install_checked_bin() {
 	fi
 
 	_verified=0
-	_src_rejected=0
 	if [ "$_verify" = "1" ] && ! path_noexec "$_src"; then
 		chmod +x "$_src" 2>/dev/null || true
 		if "$_src" -v >/dev/null 2>&1; then
 			_verified=1
-		else
-			# /tmp is often noexec, or the host blocks new binaries there.
-			# The copy beside the install is the check that matters.
-			_src_rejected=1
 		fi
 	fi
 
@@ -243,12 +239,7 @@ install_checked_bin() {
 		return 0
 	fi
 
-	if [ "$_src_rejected" = "1" ]; then
-		warn "$_label could not be checked from the download directory, and there is not enough space to check it beside the install — keeping existing binary"
-		return 1
-	fi
-
-	if [ $((_free + _old)) -ge "$_need" ]; then
+	if [ $((_free + _old)) -ge "$_bytes" ]; then
 		warn "low space: replacing $_label in place (no second copy on flash)"
 		stop_ssclash_for_upgrade
 		stop_bin_path "$_dst"
@@ -660,40 +651,134 @@ install_mihomo() {
 	}
 
 	_tmp_gz="$(mktemp)"
-	_tmp_bin="$(mktemp)"
 	info "Downloading Mihomo kernel..."
 	if ! GITHUB_GET_MAX_TIME=300 github_get "$MIHOMO_URL" "$_tmp_gz"; then
 		warn "Mihomo download failed — install from Settings later"
-		rm -f "$_tmp_gz" "$_tmp_bin"
+		rm -f "$_tmp_gz"
 		MIHOMO_STATUS="missing (download failed)"
 		return 0
 	fi
 
+	# gzip -l reports the uncompressed size when this host's gzip supports it.
+	# The archive is then streamed onto the install filesystem, so /tmp keeps
+	# only the .gz. BusyBox gzip has no -l and still unpacks to a temp file.
 	if command -v gunzip >/dev/null 2>&1; then
 		_gunzip='gunzip -c'
 	else
 		_gunzip='gzip -dc'
 	fi
-	if ! $_gunzip "$_tmp_gz" > "$_tmp_bin"; then
-		warn "Mihomo extraction failed — keeping existing kernel; install from Settings later"
-		rm -f "$_tmp_gz" "$_tmp_bin"
-		MIHOMO_STATUS="missing (extract failed)"
-		return 0
+	_bytes=""
+	_listing=$(gzip -l "$_tmp_gz" 2>/dev/null) || _listing=""
+	if [ -n "$_listing" ]; then
+		_bytes=$(printf '%s\n' "$_listing" | awk 'NR==2 { print $2; exit }')
 	fi
-	rm -f "$_tmp_gz"
-	if ! verify_downloaded_bin "$_tmp_bin" "Mihomo"; then
+	case "${_bytes:-}" in
+		''|*[!0-9]*|0)
+			_listing=$(gunzip -l "$_tmp_gz" 2>/dev/null) || _listing=""
+			if [ -n "$_listing" ]; then
+				_bytes=$(printf '%s\n' "$_listing" | awk 'NR==2 { print $2; exit }')
+			fi
+			;;
+	esac
+	case "${_bytes:-}" in
+		''|*[!0-9]*|0) _bytes="" ;;
+	esac
+
+	if [ -z "$_bytes" ]; then
+		_tmp_bin="$(mktemp)"
+		if ! $_gunzip "$_tmp_gz" > "$_tmp_bin"; then
+			warn "Mihomo extraction failed — keeping existing kernel; install from Settings later"
+			rm -f "$_tmp_gz" "$_tmp_bin"
+			MIHOMO_STATUS="missing (extract failed)"
+			return 0
+		fi
+		rm -f "$_tmp_gz"
+		if ! verify_downloaded_bin "$_tmp_bin" "Mihomo"; then
+			rm -f "$_tmp_bin"
+			MIHOMO_STATUS="missing (bad/wrong-arch binary)"
+			return 0
+		fi
+		if ! install_checked_bin "$_tmp_bin" "$CLASH_BIN" 755 "Mihomo" 1; then
+			rm -f "$_tmp_bin"
+			MIHOMO_STATUS="missing (install failed)"
+			return 0
+		fi
 		rm -f "$_tmp_bin"
-		MIHOMO_STATUS="missing (bad/wrong-arch binary)"
-		return 0
+	else
+		_dir=$(dirname "$CLASH_BIN")
+		mkdir -p "$_dir" || {
+			rm -f "$_tmp_gz"
+			MIHOMO_STATUS="missing (install failed)"
+			return 0
+		}
+		rm -f "$_dir"/.mihomo-new.*
+		_free_kb=$(fs_avail_kb "$_dir")
+		_free=$((${_free_kb:-0} * 1024))
+		_old=0
+		if [ -f "$CLASH_BIN" ]; then
+			_old=$(wc -c < "$CLASH_BIN" | tr -d ' ')
+		fi
+		if [ "$_free" -ge $((_bytes + 1048576)) ]; then
+			_stage="$_dir/.mihomo-new.$$"
+			rm -f "$_stage"
+			if ! $_gunzip "$_tmp_gz" > "$_stage"; then
+				rm -f "$_stage" "$_tmp_gz"
+				warn "Mihomo extraction failed — keeping existing kernel; install from Settings later"
+				MIHOMO_STATUS="missing (extract failed)"
+				return 0
+			fi
+			rm -f "$_tmp_gz"
+			if ! chmod 755 "$_stage"; then
+				rm -f "$_stage"
+				MIHOMO_STATUS="missing (install failed)"
+				return 0
+			fi
+			if ! "$_stage" -v >/dev/null 2>&1; then
+				rm -f "$_stage"
+				warn "Mihomo does not run on this host — keeping existing binary"
+				MIHOMO_STATUS="missing (install failed)"
+				return 0
+			fi
+			stop_ssclash_for_upgrade
+			stop_bin_path "$CLASH_BIN"
+			if ! mv -f "$_stage" "$CLASH_BIN"; then
+				rm -f "$_stage"
+				MIHOMO_STATUS="missing (install failed)"
+				return 0
+			fi
+			chmod 755 "$CLASH_BIN"
+		elif [ $((_free + _old)) -ge "$_bytes" ]; then
+			warn "low space: replacing Mihomo in place (no second copy on flash)"
+			stop_ssclash_for_upgrade
+			stop_bin_path "$CLASH_BIN"
+			rm -f "$CLASH_BIN"
+			if ! $_gunzip "$_tmp_gz" > "$CLASH_BIN"; then
+				rm -f "$CLASH_BIN" "$_tmp_gz"
+				warn "Mihomo replace failed — binary missing until reinstall"
+				MIHOMO_STATUS="missing (extract failed)"
+				return 0
+			fi
+			rm -f "$_tmp_gz"
+			if ! chmod 755 "$CLASH_BIN"; then
+				rm -f "$CLASH_BIN"
+				MIHOMO_STATUS="missing (install failed)"
+				return 0
+			fi
+			if ! "$CLASH_BIN" -v >/dev/null 2>&1; then
+				rm -f "$CLASH_BIN"
+				warn "Mihomo does not run — removed the failed install"
+				MIHOMO_STATUS="missing (install failed)"
+				return 0
+			fi
+		else
+			_need_mib=$(((_bytes + 1048575) / 1048576))
+			_free_mib=$((_free / 1048576))
+			warn "not enough free space for Mihomo (need about ${_need_mib} MiB, free ${_free_mib} MiB) — keeping existing binary"
+			rm -f "$_tmp_gz"
+			MIHOMO_STATUS="missing (install failed)"
+			return 0
+		fi
 	fi
-	# -v runs from /tmp when that mount is executable. A second copy is written
-	# beside the old kernel only when the destination filesystem has room for it.
-	if ! install_checked_bin "$_tmp_bin" "$CLASH_BIN" 755 "Mihomo" 1; then
-		rm -f "$_tmp_bin"
-		MIHOMO_STATUS="missing (install failed)"
-		return 0
-	fi
-	rm -f "$_tmp_bin"
 	rm -f /opt/clash/bin/meta-backup 2>/dev/null || true
 
 	MIHOMO_V=$("$CLASH_BIN" -v 2>/dev/null || true)
