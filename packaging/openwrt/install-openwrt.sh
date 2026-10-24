@@ -645,7 +645,7 @@ detect_arch() {
 
 	case "$ARCH_PKG" in
 		aarch64_*)      SSCLASH_ASSET="arm64"; MIHOMO_ARCH="arm64" ;;
-		x86_64)         SSCLASH_ASSET="amd64"; MIHOMO_ARCH="amd64-compatible" ;;
+		x86_64)         SSCLASH_ASSET="amd64"; MIHOMO_ARCH="amd64" ;;
 		i386_*)         SSCLASH_ASSET="386";   MIHOMO_ARCH="386" ;;
 		riscv64_*)      SSCLASH_ASSET="riscv64"; MIHOMO_ARCH="riscv64" ;;
 		loongarch64_*)  SSCLASH_ASSET="loong64"; MIHOMO_ARCH="loong64" ;;
@@ -682,7 +682,7 @@ detect_arch() {
 			armv7l)          SSCLASH_ASSET="armv7"; MIHOMO_ARCH="armv7" ;;
 			armv6l)          SSCLASH_ASSET="armv6"; MIHOMO_ARCH="armv6" ;;
 			armv5l|armv5tel) SSCLASH_ASSET="armv5"; MIHOMO_ARCH="armv5" ;;
-			x86_64)          SSCLASH_ASSET="amd64"; MIHOMO_ARCH="amd64-compatible" ;;
+			x86_64)          SSCLASH_ASSET="amd64"; MIHOMO_ARCH="amd64" ;;
 			i686|i386)       SSCLASH_ASSET="386";   MIHOMO_ARCH="386" ;;
 			riscv64)         SSCLASH_ASSET="riscv64"; MIHOMO_ARCH="riscv64" ;;
 			loongarch64)     SSCLASH_ASSET="loong64"; MIHOMO_ARCH="loong64" ;;
