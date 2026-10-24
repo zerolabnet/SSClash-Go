@@ -344,7 +344,7 @@ with `clash -t`, then restarts Mihomo when the service is running.
 
 ## Step 4: Mihomo kernel management
 
-The autoinstall scripts download the latest Mihomo kernel automatically. On a small flash filesystem the new kernel replaces the old one instead of keeping both copies, and a failed update removes `.mihomo-new.*` instead of leaving it to fill the disk. You can also manage it from the web UI or install manually (see below).
+The autoinstall scripts download the latest Mihomo kernel automatically. On a small flash filesystem the new kernel replaces the old one instead of keeping both copies, and a failed update removes `.mihomo-new.*` instead of leaving it to fill the disk. Autoinstall streams Mihomo onto the install filesystem and does not keep a second full uncompressed copy in `/tmp`. You can also manage it from the web UI or install manually (see below).
 
 From the web UI, go to **Settings** → **Mihomo kernel**. Pick a **Release channel** (**Stable** is the default: the latest non-prerelease; **Alpha** uses `mihomo-linux-*-alpha-*` assets), then **Check updates** or **Download / Update**. SSClash will:
 
