@@ -344,7 +344,7 @@ with `clash -t`, then restarts Mihomo when the service is running.
 
 ## Update SSClash from Settings
 
-Open **Settings**. The **SSClash** card is above **Mihomo kernel**. Click **Check updates** to read the latest stable GitHub release. Click **Download / Update** to replace `/opt/clash/bin/ssclash` and restart the service. SSClash does not check for updates in the background.
+Open **Settings**. The **SSClash** card is above **Mihomo kernel**. Click **Check updates** to read the latest stable GitHub release. Click **Update** to replace `/opt/clash/bin/ssclash` and restart the service. SSClash does not check for updates in the background.
 
 The router must reach GitHub. On Linux, the service account must be allowed to run `systemctl restart ssclash.service`. That is the same permission the service restart already requires.
 
