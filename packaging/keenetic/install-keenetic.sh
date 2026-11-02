@@ -144,6 +144,48 @@ verify_downloaded_bin() {
 	return 1
 }
 
+check_sha256sum() {
+	_file=$1
+	_asset=$2
+	_sums=$3
+	[ -n "$_file" ] && [ -n "$_asset" ] && [ -n "$_sums" ] || return 1
+	[ -s "$_file" ] && [ -f "$_sums" ] || return 1
+
+	_got=""
+	if command -v sha256sum >/dev/null 2>&1; then
+		_got=$(sha256sum "$_file" 2>/dev/null | awk 'NR==1 { print tolower($1); exit }') || _got=""
+	fi
+	if [ -z "$_got" ] && command -v shasum >/dev/null 2>&1; then
+		_got=$(shasum -a 256 "$_file" 2>/dev/null | awk 'NR==1 { print tolower($1); exit }') || _got=""
+	fi
+	if [ -z "$_got" ] && command -v openssl >/dev/null 2>&1; then
+		_got=$(openssl dgst -sha256 "$_file" 2>/dev/null | awk 'NR==1 { print tolower($NF); exit }') || _got=""
+	fi
+	_glen=$(printf '%s' "$_got" | wc -c | tr -d ' ')
+	[ "${_glen:-0}" -eq 64 ] || return 1
+	case "$_got" in
+		*[!0-9a-f]*) return 1 ;;
+	esac
+
+	_want=$(awk -v asset="$_asset" '
+		{
+			gsub(/\r/, "")
+			if ($0 ~ /^[[:space:]]*#/ || NF < 2) next
+			hex = tolower($1)
+			name = $NF
+			sub(/^\*/, "", name)
+			sub(/^.*\//, "", name)
+			if (length(hex) != 64 || hex ~ /[^0-9a-f]/) next
+			if (name == asset) {
+				print hex
+				exit
+			}
+		}
+	' "$_sums") || return 1
+	[ -n "$_want" ] || return 1
+	[ "$_got" = "$_want" ]
+}
+
 stop_bin_path() {
 	_bin="$1"
 	[ -n "$_bin" ] || return 0
@@ -605,10 +647,20 @@ install_ssclash() {
 
 	say "downloading ssclash..."
 	TMP="$(mktemp)"
+	SUMS="$(mktemp)"
 	if ! GITHUB_GET_MAX_TIME=300 github_get "$SSCLASH_BIN_URL" "$TMP"; then
-		rm -f "$TMP"
+		rm -f "$TMP" "$SUMS"
 		die "ssclash download failed"
 	fi
+	if ! github_get "${SSCLASH_BIN_URL%/*}/sha256sums.txt" "$SUMS"; then
+		rm -f "$TMP" "$SUMS"
+		die "sha256sums.txt download failed"
+	fi
+	if ! check_sha256sum "$TMP" "${SSCLASH_BIN_URL##*/}" "$SUMS"; then
+		rm -f "$TMP" "$SUMS"
+		die "sha256 mismatch for ${SSCLASH_BIN_URL##*/}"
+	fi
+	rm -f "$SUMS"
 	if ! install_bin "$TMP" "$SSCLASH_BIN" 755 "ssclash"; then
 		rm -f "$TMP"
 		die "ssclash install failed (bad download?)"
