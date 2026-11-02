@@ -144,12 +144,39 @@ verify_downloaded_bin() {
 	return 1
 }
 
-check_sha256sum() {
+# asset_digest prints the sha256 hex GitHub stores in the asset digest field.
+# Each asset object lists name before digest.
+asset_digest() {
+	_json=$1
+	_name=$2
+	[ -n "$_json" ] && [ -n "$_name" ] || return 1
+	printf '%s' "$_json" | awk -v asset="$_name" '
+		BEGIN { RS = "\"name\"" }
+		NR == 1 { next }
+		{
+			if (index($0, ": \"" asset "\"") != 1 && index($0, ":\"" asset "\"") != 1)
+				next
+			if (match($0, /sha256:[0-9A-Fa-f]+/)) {
+				hex = substr($0, RSTART + 7, RLENGTH - 7)
+				if (length(hex) == 64) {
+					print hex
+					exit
+				}
+			}
+			exit 1
+		}
+	'
+}
+
+check_sha256() {
 	_file=$1
-	_asset=$2
-	_sums=$3
-	[ -n "$_file" ] && [ -n "$_asset" ] && [ -n "$_sums" ] || return 1
-	[ -s "$_file" ] && [ -f "$_sums" ] || return 1
+	_want=$(printf '%s' "$2" | tr 'A-F' 'a-f' | tr -d '[:space:]')
+	[ -n "$_file" ] && [ -s "$_file" ] || return 1
+	_wlen=$(printf '%s' "$_want" | wc -c | tr -d ' ')
+	[ "${_wlen:-0}" -eq 64 ] || return 1
+	case "$_want" in
+		*[!0-9a-f]*) return 1 ;;
+	esac
 
 	_got=""
 	if command -v sha256sum >/dev/null 2>&1; then
@@ -166,23 +193,6 @@ check_sha256sum() {
 	case "$_got" in
 		*[!0-9a-f]*) return 1 ;;
 	esac
-
-	_want=$(awk -v asset="$_asset" '
-		{
-			gsub(/\r/, "")
-			if ($0 ~ /^[[:space:]]*#/ || NF < 2) next
-			hex = tolower($1)
-			name = $NF
-			sub(/^\*/, "", name)
-			sub(/^.*\//, "", name)
-			if (length(hex) != 64 || hex ~ /[^0-9a-f]/) next
-			if (name == asset) {
-				print hex
-				exit
-			}
-		}
-	' "$_sums") || return 1
-	[ -n "$_want" ] || return 1
 	[ "$_got" = "$_want" ]
 }
 
@@ -647,20 +657,19 @@ install_ssclash() {
 
 	say "downloading ssclash..."
 	TMP="$(mktemp)"
-	SUMS="$(mktemp)"
+	_asset=${SSCLASH_BIN_URL##*/}
+	_want=$(asset_digest "$RELEASE_JSON" "$_asset") || {
+		rm -f "$TMP"
+		die "release has no sha256 for ${_asset}"
+	}
 	if ! GITHUB_GET_MAX_TIME=300 github_get "$SSCLASH_BIN_URL" "$TMP"; then
-		rm -f "$TMP" "$SUMS"
+		rm -f "$TMP"
 		die "ssclash download failed"
 	fi
-	if ! github_get "${SSCLASH_BIN_URL%/*}/sha256sums.txt" "$SUMS"; then
-		rm -f "$TMP" "$SUMS"
-		die "sha256sums.txt download failed"
+	if ! check_sha256 "$TMP" "$_want"; then
+		rm -f "$TMP"
+		die "sha256 mismatch for ${_asset}"
 	fi
-	if ! check_sha256sum "$TMP" "${SSCLASH_BIN_URL##*/}" "$SUMS"; then
-		rm -f "$TMP" "$SUMS"
-		die "sha256 mismatch for ${SSCLASH_BIN_URL##*/}"
-	fi
-	rm -f "$SUMS"
 	if ! install_bin "$TMP" "$SSCLASH_BIN" 755 "ssclash"; then
 		rm -f "$TMP"
 		die "ssclash install failed (bad download?)"
@@ -744,6 +753,19 @@ install_mihomo() {
 		warn "Mihomo download failed — install from Settings later"
 		rm -f "$_tmp_gz"
 		MIHOMO_STATUS="missing (download failed)"
+		return 0
+	fi
+	_mname=${MIHOMO_URL##*/}
+	_mwant=$(asset_digest "$MIHOMO_JSON" "$_mname") || {
+		warn "Mihomo release has no sha256 for ${_mname} — install from Settings later"
+		rm -f "$_tmp_gz"
+		MIHOMO_STATUS="missing (no sha256)"
+		return 0
+	}
+	if ! check_sha256 "$_tmp_gz" "$_mwant"; then
+		warn "Mihomo sha256 mismatch for ${_mname} — keeping existing kernel"
+		rm -f "$_tmp_gz"
+		MIHOMO_STATUS="missing (sha256 mismatch)"
 		return 0
 	fi
 

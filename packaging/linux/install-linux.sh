@@ -133,12 +133,39 @@ verify_downloaded_bin() {
 	return 1
 }
 
-check_sha256sum() {
+# asset_digest prints the sha256 hex GitHub stores in the asset digest field.
+# Each asset object lists name before digest.
+asset_digest() {
+	_json=$1
+	_name=$2
+	[ -n "$_json" ] && [ -n "$_name" ] || return 1
+	printf '%s' "$_json" | awk -v asset="$_name" '
+		BEGIN { RS = "\"name\"" }
+		NR == 1 { next }
+		{
+			if (index($0, ": \"" asset "\"") != 1 && index($0, ":\"" asset "\"") != 1)
+				next
+			if (match($0, /sha256:[0-9A-Fa-f]+/)) {
+				hex = substr($0, RSTART + 7, RLENGTH - 7)
+				if (length(hex) == 64) {
+					print hex
+					exit
+				}
+			}
+			exit 1
+		}
+	'
+}
+
+check_sha256() {
 	_file=$1
-	_asset=$2
-	_sums=$3
-	[ -n "$_file" ] && [ -n "$_asset" ] && [ -n "$_sums" ] || return 1
-	[ -s "$_file" ] && [ -f "$_sums" ] || return 1
+	_want=$(printf '%s' "$2" | tr 'A-F' 'a-f' | tr -d '[:space:]')
+	[ -n "$_file" ] && [ -s "$_file" ] || return 1
+	_wlen=$(printf '%s' "$_want" | wc -c | tr -d ' ')
+	[ "${_wlen:-0}" -eq 64 ] || return 1
+	case "$_want" in
+		*[!0-9a-f]*) return 1 ;;
+	esac
 
 	_got=""
 	if command -v sha256sum >/dev/null 2>&1; then
@@ -155,23 +182,6 @@ check_sha256sum() {
 	case "$_got" in
 		*[!0-9a-f]*) return 1 ;;
 	esac
-
-	_want=$(awk -v asset="$_asset" '
-		{
-			gsub(/\r/, "")
-			if ($0 ~ /^[[:space:]]*#/ || NF < 2) next
-			hex = tolower($1)
-			name = $NF
-			sub(/^\*/, "", name)
-			sub(/^.*\//, "", name)
-			if (length(hex) != 64 || hex ~ /[^0-9a-f]/) next
-			if (name == asset) {
-				print hex
-				exit
-			}
-		}
-	' "$_sums") || return 1
-	[ -n "$_want" ] || return 1
 	[ "$_got" = "$_want" ]
 }
 
@@ -700,6 +710,19 @@ install_mihomo() {
 		MIHOMO_STATUS="missing (download failed)"
 		return 0
 	fi
+	_mname=${MIHOMO_URL##*/}
+	_mwant=$(asset_digest "$MIHOMO_JSON" "$_mname") || {
+		warn "Mihomo release has no sha256 for ${_mname} — install from Settings later"
+		rm -f "$_tmp_gz"
+		MIHOMO_STATUS="missing (no sha256)"
+		return 0
+	}
+	if ! check_sha256 "$_tmp_gz" "$_mwant"; then
+		warn "Mihomo sha256 mismatch for ${_mname} — keeping existing kernel"
+		rm -f "$_tmp_gz"
+		MIHOMO_STATUS="missing (sha256 mismatch)"
+		return 0
+	fi
 
 	# gzip -l reports the uncompressed size when this host's gzip supports it.
 	# The archive is then streamed onto the install filesystem, so /tmp keeps
@@ -830,10 +853,8 @@ install_mihomo() {
 }
 
 TMP_BIN=""
-TMP_SUM=""
 cleanup() {
 	[ -n "$TMP_BIN" ] && rm -f "$TMP_BIN"
-	[ -n "$TMP_SUM" ] && rm -f "$TMP_SUM"
 }
 trap cleanup EXIT INT TERM
 
@@ -847,23 +868,23 @@ else
 	[ -n "$ARCH" ] || err "Unsupported architecture: $(uname -m). Build locally and use --from."
 
 	if [ "$VERSION" = "latest" ]; then
-		info "Resolving latest release tag for $REPO"
-		VERSION="$(github_get "https://api.github.com/repos/$REPO/releases/latest" \
-			| sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
-		[ -n "$VERSION" ] || err "Could not determine latest release tag."
+		REL_API="https://api.github.com/repos/$REPO/releases/latest"
+	else
+		REL_API="https://api.github.com/repos/$REPO/releases/tags/$VERSION"
 	fi
+	info "Resolving release $VERSION for $REPO"
+	RELEASE_JSON="$(github_get "$REL_API")" || err "Could not fetch release JSON."
+	VERSION="$(printf '%s' "$RELEASE_JSON" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
+	[ -n "$VERSION" ] || err "Could not determine release tag."
 
 	ASSET="ssclash-linux-$ARCH"
 	URL="https://github.com/$REPO/releases/download/$VERSION/$ASSET"
-	SUM_URL="https://github.com/$REPO/releases/download/$VERSION/sha256sums.txt"
+	WANT="$(asset_digest "$RELEASE_JSON" "$ASSET")" || err "release has no sha256 for $ASSET"
 	TMP_BIN="$(mktemp)"
-	TMP_SUM="$(mktemp)"
 	info "Downloading $ASSET ($VERSION)"
 	GITHUB_GET_MAX_TIME=300 github_get "$URL" "$TMP_BIN" \
 		|| err "Download failed: $URL"
-	github_get "$SUM_URL" "$TMP_SUM" \
-		|| err "Download failed: $SUM_URL"
-	check_sha256sum "$TMP_BIN" "$ASSET" "$TMP_SUM" \
+	check_sha256 "$TMP_BIN" "$WANT" \
 		|| err "sha256 mismatch for $ASSET"
 	BIN_SRC="$TMP_BIN"
 fi

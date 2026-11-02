@@ -1,5 +1,5 @@
 #!/bin/sh
-# check_sha256sum accepts a matching sha256sums.txt line and rejects a mismatch.
+# check_sha256 compares a file to a GitHub asset digest. asset_digest reads that field.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
@@ -16,8 +16,8 @@ note_fail() {
 }
 
 extract_fn() {
-	awk '
-		/^check_sha256sum\(\)/ { p = 1 }
+	awk -v fn="$2" '
+		$0 ~ "^" fn "\\(\\)" { p = 1 }
 		p { print }
 		p && /^}/ { exit }
 	' "$1"
@@ -51,39 +51,45 @@ else
 	_lead=0
 fi
 BAD="${_lead}$(printf '%s' "$GOOD" | cut -c2-)"
+UPPER=$(printf '%s' "$GOOD" | tr 'a-f' 'A-F')
 
-{
-	printf '%s  ssclash-linux-arm64\n' "$BAD"
-	printf '%s  %s\n' "$GOOD" "$ASSET"
-	printf '%s  ssclash-linux-386\n' "$BAD"
-} > "$WORKDIR/good.txt"
+JSON=$(printf '%s\n' \
+	'{' \
+	'  "assets": [' \
+	'    {"name": "other.bin", "digest": "sha256:'"$BAD"'"},' \
+	'    {' \
+	'      "name": "'"$ASSET"'",' \
+	'      "browser_download_url": "https://example/'"$ASSET"'",' \
+	'      "digest": "sha256:'"$GOOD"'"' \
+	'    }' \
+	'  ]' \
+	'}')
+NO_DIGEST=$(printf '%s\n' \
+	'{"assets":[{"name":"'"$ASSET"'","browser_download_url":"https://example/'"$ASSET"'"}]}')
 
-{
-	printf '%s  ssclash-linux-arm64\n' "$GOOD"
-	printf '%s  %s\n' "$BAD" "$ASSET"
-	printf '%s  ssclash-linux-386\n' "$GOOD"
-} > "$WORKDIR/bad.txt"
-
-printf '%s *%s\n' "$GOOD" "$ASSET" > "$WORKDIR/star.txt"
-printf '%s  %s\n' "$(printf '%s' "$GOOD" | tr 'a-f' 'A-F')" "$ASSET" > "$WORKDIR/upper.txt"
-
-if command -v shasum >/dev/null 2>&1; then
-	(
-		cd "$WORKDIR"
-		shasum -a 256 "$ASSET" > shasum.txt
-	)
-fi
-
-run_check() {
+run_hash() {
 	_script=$1
-	_sums=$2
+	_want=$2
 	_runner=$WORKDIR/runner.sh
 	{
 		printf '%s\n' '#!/bin/sh' 'set -eu'
-		extract_fn "$_script"
-		printf '%s\n' 'check_sha256sum "$1" "$2" "$3"'
+		extract_fn "$_script" check_sha256
+		printf '%s\n' 'check_sha256 "$1" "$2"'
 	} > "$_runner"
-	sh "$_runner" "$WORKDIR/$ASSET" "$ASSET" "$_sums"
+	sh "$_runner" "$WORKDIR/$ASSET" "$_want"
+}
+
+run_digest() {
+	_script=$1
+	_json=$2
+	_asset_name=$3
+	_runner=$WORKDIR/digest.sh
+	{
+		printf '%s\n' '#!/bin/sh' 'set -eu'
+		extract_fn "$_script" asset_digest
+		printf '%s\n' 'asset_digest "$1" "$2"'
+	} > "$_runner"
+	sh "$_runner" "$_json" "$_asset_name"
 }
 
 for _script in \
@@ -92,32 +98,31 @@ for _script in \
 	"$ROOT/packaging/keenetic/install-keenetic.sh"
 do
 	_name=${_script##*/}
-	if run_check "$_script" "$WORKDIR/good.txt"; then
-		note_ok "$_name accepted a good sum"
+	if run_hash "$_script" "$GOOD"; then
+		note_ok "$_name accepted a good digest"
 	else
-		note_fail "$_name rejected a good sum"
+		note_fail "$_name rejected a good digest"
 	fi
-	if run_check "$_script" "$WORKDIR/bad.txt"; then
-		note_fail "$_name accepted a bad sum"
+	if run_hash "$_script" "$BAD"; then
+		note_fail "$_name accepted a bad digest"
 	else
-		note_ok "$_name rejected a bad sum"
+		note_ok "$_name rejected a bad digest"
 	fi
-	if run_check "$_script" "$WORKDIR/star.txt"; then
-		note_ok "$_name accepted *name"
-	else
-		note_fail "$_name rejected *name"
-	fi
-	if run_check "$_script" "$WORKDIR/upper.txt"; then
+	if run_hash "$_script" "$UPPER"; then
 		note_ok "$_name accepted uppercase hex"
 	else
 		note_fail "$_name rejected uppercase hex"
 	fi
-	if [ -f "$WORKDIR/shasum.txt" ]; then
-		if run_check "$_script" "$WORKDIR/shasum.txt"; then
-			note_ok "$_name accepted shasum -a 256 output"
-		else
-			note_fail "$_name rejected shasum -a 256 output"
-		fi
+	_got=$(run_digest "$_script" "$JSON" "$ASSET" || true)
+	if [ "$_got" = "$GOOD" ]; then
+		note_ok "$_name read the asset digest"
+	else
+		note_fail "$_name digest was ${_got:-empty}"
+	fi
+	if run_digest "$_script" "$NO_DIGEST" "$ASSET" >/dev/null 2>&1; then
+		note_fail "$_name accepted an asset with no digest"
+	else
+		note_ok "$_name rejected an asset with no digest"
 	fi
 done
 
