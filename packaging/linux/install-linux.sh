@@ -159,7 +159,8 @@ asset_digest() {
 
 check_sha256() {
 	_file=$1
-	_want=$(printf '%s' "$2" | tr 'A-F' 'a-f' | tr -d '[:space:]')
+	# BusyBox tr often has no character classes. [:space:] then deletes a, c, and e.
+	_want=$(printf '%s' "$2" | tr 'A-F' 'a-f' | tr -d ' \t\r\n')
 	[ -n "$_file" ] && [ -s "$_file" ] || return 1
 	_wlen=$(printf '%s' "$_want" | wc -c | tr -d ' ')
 	[ "${_wlen:-0}" -eq 64 ] || return 1

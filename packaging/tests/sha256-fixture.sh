@@ -26,6 +26,20 @@ extract_fn() {
 WORKDIR=$(mktemp -d)
 trap 'rm -rf "$WORKDIR"' EXIT INT TERM
 
+# OpenWrt builds BusyBox tr without character classes. [:space:] is then the
+# letters in that word, and a, c, and e disappear from the expected hash.
+BBTR=$WORKDIR/bbtr
+mkdir -p "$BBTR"
+cat > "$BBTR/tr" << 'EOF'
+#!/bin/sh
+if [ "$1" = "-d" ] && [ "$2" = "[:space:]" ]; then
+	python3 -c 'import sys; drop=set("[:space:]"); data=sys.stdin.read(); sys.stdout.write("".join(c for c in data if c not in drop))'
+	exit 0
+fi
+exec /usr/bin/tr "$@"
+EOF
+chmod +x "$BBTR/tr"
+
 printf 'ssclash fixture\n' > "$WORKDIR/$ASSET"
 command -v openssl >/dev/null 2>&1 || {
 	printf 'FAIL: openssl is required to build the fixture digest\n' >&2
@@ -76,7 +90,11 @@ run_hash() {
 		extract_fn "$_script" check_sha256
 		printf '%s\n' 'check_sha256 "$1" "$2"'
 	} > "$_runner"
-	sh "$_runner" "$WORKDIR/$ASSET" "$_want"
+	if [ -n "${3:-}" ]; then
+		PATH="$3" sh "$_runner" "$WORKDIR/$ASSET" "$_want"
+	else
+		sh "$_runner" "$WORKDIR/$ASSET" "$_want"
+	fi
 }
 
 run_digest() {
@@ -112,6 +130,11 @@ do
 		note_ok "$_name accepted uppercase hex"
 	else
 		note_fail "$_name rejected uppercase hex"
+	fi
+	if run_hash "$_script" "$GOOD" "$BBTR:$PATH"; then
+		note_ok "$_name accepted a good digest without tr classes"
+	else
+		note_fail "$_name rejected a good digest without tr classes"
 	fi
 	_got=$(run_digest "$_script" "$JSON" "$ASSET" || true)
 	if [ "$_got" = "$GOOD" ]; then
