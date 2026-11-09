@@ -903,6 +903,39 @@ install_service() {
 }
 
 # Pick a mihomo .gz asset URL from the release JSON (handles loong64 ABI variants).
+has_cpu_flag() {
+	case " $1 " in
+		*" $2 "*) return 0 ;;
+	esac
+	return 1
+}
+
+# The unsuffixed mihomo-linux-amd64 file is an x86-64-v3 build.
+amd64_mihomo_names() {
+	_ver=$1
+	_flags=$2
+	_v2=1
+	for _f in cx16 lahf_lm popcnt pni sse4_1 sse4_2 ssse3; do
+		has_cpu_flag "$_flags" "$_f" || _v2=0
+	done
+	_v3=0
+	if [ "$_v2" = 1 ]; then
+		_v3=1
+		for _f in avx avx2 bmi1 bmi2 f16c fma abm movbe osxsave; do
+			has_cpu_flag "$_flags" "$_f" || _v3=0
+		done
+	fi
+	if [ "$_v3" = 1 ]; then
+		echo "mihomo-linux-amd64-v3-${_ver}.gz mihomo-linux-amd64-v2-${_ver}.gz mihomo-linux-amd64-v1-${_ver}.gz mihomo-linux-amd64-compatible-${_ver}.gz mihomo-linux-amd64-${_ver}.gz"
+		return 0
+	fi
+	if [ "$_v2" = 1 ]; then
+		echo "mihomo-linux-amd64-v2-${_ver}.gz mihomo-linux-amd64-v1-${_ver}.gz mihomo-linux-amd64-compatible-${_ver}.gz mihomo-linux-amd64-${_ver}.gz"
+		return 0
+	fi
+	echo "mihomo-linux-amd64-v1-${_ver}.gz mihomo-linux-amd64-compatible-${_ver}.gz mihomo-linux-amd64-${_ver}.gz"
+}
+
 mihomo_asset_url() {
 	_ver="$1"
 	_arch="$2"
@@ -910,6 +943,10 @@ mihomo_asset_url() {
 	case "$_arch" in
 		loong64)
 			_candidates="mihomo-linux-loong64-abi2-${_ver}.gz mihomo-linux-loong64-abi1-${_ver}.gz"
+			;;
+		amd64)
+			_flags=$(awk '/^flags/ { sub(/^flags[^:]*:[[:space:]]*/, ""); print; exit }' /proc/cpuinfo 2>/dev/null || true)
+			_candidates=$(amd64_mihomo_names "$_ver" "$_flags")
 			;;
 		*)
 			_candidates="mihomo-linux-${_arch}-${_ver}.gz"
