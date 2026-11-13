@@ -1,11 +1,20 @@
 #!/bin/sh
 # SSClash-Go installer for OpenWrt (procd).
 #
-# Prefer the bootstrap one-liner:
-#   wget -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash
+# Prefer the bootstrap command. It saves the file first, so a failed
+# download prints an error instead of exiting with no output:
+#   echo "[ssclash-go] downloading installer..." >&2
+#   if wget -T 30 -O /tmp/install-ssclash-go.sh \
+#     https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh \
+#     && [ -s /tmp/install-ssclash-go.sh ]; then
+#     ash /tmp/install-ssclash-go.sh
+#   else
+#     echo "[ssclash-go] ERROR: download failed" >&2
+#     false
+#   fi
 #
-# Or save this script first (wget -q | sh is silent until download finishes):
-#   wget -O /tmp/install-openwrt.sh \
+# Or save this script first:
+#   wget -T 30 -O /tmp/install-openwrt.sh \
 #     https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/packaging/openwrt/install-openwrt.sh
 #   sh /tmp/install-openwrt.sh
 #

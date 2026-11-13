@@ -2,10 +2,27 @@
 # SSClash-Go bootstrap installer — detects platform and runs the matching script.
 #
 # OpenWrt / Keenetic:
-#   wget -T 30 -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash
+#   echo "[ssclash-go] downloading installer..." >&2
+#   if wget -T 30 -O /tmp/install-ssclash-go.sh \
+#     https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh \
+#     && [ -s /tmp/install-ssclash-go.sh ]; then
+#     ash /tmp/install-ssclash-go.sh
+#   else
+#     echo "[ssclash-go] ERROR: download failed" >&2
+#     false
+#   fi
 #
 # Linux (systemd):
-#   curl -fsSL https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | sudo sh
+#   echo "[ssclash-go] downloading installer..." >&2
+#   if curl -fL --retry 2 --connect-timeout 15 --max-time 120 \
+#     -o /tmp/install-ssclash-go.sh \
+#     https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh \
+#     && [ -s /tmp/install-ssclash-go.sh ]; then
+#     sudo sh /tmp/install-ssclash-go.sh
+#   else
+#     echo "[ssclash-go] ERROR: download failed" >&2
+#     false
+#   fi
 #
 # Override detection: SSCLASH_PLATFORM=openwrt|keenetic|linux
 set -e

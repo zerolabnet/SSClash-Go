@@ -1,479 +1,528 @@
-📖 Read this in other languages:
+Read this in other languages:
 - [Русский](README.ru.md)
 
 <p align="center">
   <img src=".github/assets/images/logos/SSClash.png" alt="SSClash" width="200">
 </p>
 
-<p align="center"><em>Super Simple Clash — centralized selective bypass with Mihomo (Clash.Meta)</em></p>
+<p align="center"><em>Super Simple Clash — centralized selective routing and transparent proxy powered by Mihomo (Clash.Meta)</em></p>
 
-<p align="center">Here's the step-by-step process for installing and configuring SSClash on your router or Linux gateway.</p>
+**SSClash** is a self-contained daemon with an embedded web UI and a native firewall and policy-routing engine for routers and Linux gateways. It requires no LuCI packages or OpenWrt SDK and serves as the modern Go successor to the original [zerolabnet/SSClash](https://github.com/zerolabnet/SSClash) LuCI application while keeping the familiar `/opt/clash` directory layout.
 
-This repository is the official distribution of **SSClash** — a self-contained
-daemon with an embedded web UI. No LuCI package or OpenWrt SDK is required. It
-is the successor to the original
-[zerolabnet/SSClash](https://github.com/zerolabnet/SSClash) LuCI application
-while keeping the same `/opt/clash` layout and feature set.
+---
+
+## Contents
+
+- [Highlights](#highlights)
+- [Quick Start](#quick-start)
+  - [1. Install SSClash](#1-install-ssclash)
+  - [2. First Run](#2-first-run)
+- [Updating SSClash and Mihomo](#updating-ssclash-and-mihomo)
+  - [Update from the Web UI (Recommended)](#update-from-the-web-ui-recommended)
+  - [Update via the Installer (`--update`)](#update-via-the-installer---update)
+- [Common Installation Scenarios & Flags](#common-installation-scenarios--flags)
+  - [Installer Options Reference](#installer-options-reference)
+  - [Offline & Manual Installation](#offline--manual-installation)
+- [Operating Modes & Proxy Modes](#operating-modes--proxy-modes)
+  - [Gateway vs. Server Mode](#gateway-vs-server-mode)
+  - [Proxy Modes (Gateway)](#proxy-modes-gateway)
+  - [Platform Notes: Keenetic](#platform-notes-keenetic)
+- [Settings & Traffic Control](#settings--traffic-control)
+  - [Interface Selection Modes](#interface-selection-modes)
+  - [DNS Interception & DoT/DoH Blocking](#dns-interception--dotdoh-blocking)
+  - [Firewall Options & Filtering](#firewall-options--filtering)
+  - [Maintenance, RAM Storage, HWID & Backups](#maintenance-ram-storage-hwid--backups)
+- [Web UI Guide](#web-ui-guide)
+  - [Configuration, Profiles, Subscriptions & Listeners](#configuration-profiles-subscriptions--listeners)
+  - [Rule Lists & Fake-IP Whitelist](#rule-lists--fake-ip-whitelist)
+  - [Built-in Mihomo Dashboard](#built-in-mihomo-dashboard)
+  - [System Log](#system-log)
+- [Technical Reference](#technical-reference)
+  - [Directory Layout & Migration](#directory-layout--migration)
+  - [Command-Line Interface (CLI)](#command-line-interface-cli)
+  - [Environment Variables](#environment-variables)
+  - [Key Constants & Release Assets](#key-constants--release-assets)
+- [Uninstall](#uninstall)
+- [License & Support](#license--support)
+
+---
 
 ## Highlights
 
-- **One binary, every architecture.** Pre-built static binaries for amd64, arm64, armv5/6/7, 386, loong64, riscv64, ppc64le, s390x and mips/mipsle variants. The web UI is embedded in the daemon.
-- **Embedded web UI** — **Configuration**, **Settings**, **Rule Lists**, built-in **Proxies / Connections / Rules / Core Logs** dashboard, and **System Log** — with YAML editing, service control, interface/kernel management and live streams.
-- **External Mihomo core**, fully managed: download/update from GitHub releases (arch auto-detected), start/stop/restart, `clash -t` validation and hot reload via the Mihomo API.
-- **Native firewall engine**: atomic `nft -f -` ruleset (`table inet clash`) or iptables/ipset fallback; **TPROXY / HYBRID / TUN / MIXED / MIXED2** modes; exclude/explicit interface model; QUIC blocking; optional drop of forwarded IPv6; optional kill switch while Mihomo is down; optional DoT/DoH blocking when Mihomo DNS interception is active; reserved destination networks; port filter; per-client source bypass; optional proxying of the router's own traffic; optional DSCP bypass and force proxy; fake-ip whitelist optimisation; subscription server-IP bypass.
-- **Policy routing** via `ip rule`/`ip route` (tables `100`/`101`, fwmarks `0x1`/`0x2`/`0x3` on OpenWrt and Linux; Keenetic uses `0x80000000`/`0x10000000` with mask `0x90000000`).
-- **Secure by default**: first-run admin password (PBKDF2-HMAC-SHA256), HMAC session cookies, CSRF protection, optional HTTPS.
-- **Platform support**: OpenWrt, generic Linux (systemd), and Keenetic (Entware).
+- **Single static binary for every architecture** — pre-built binaries for `amd64`, `arm64`, `armv5`/`v6`/`v7`, `386`, `loong64`, `riscv64`, `ppc64le`, `s390x`, and `mips`/`mipsle` (hardfloat and softfloat). The web UI is embedded directly into the daemon.
+- **Full-featured web UI (English & Russian)** — **Configuration** editor, **Settings**, **Rule Lists**, built-in **Proxies / Connections / Rules / Core Logs** dashboard, and live **System Log**.
+- **Managed Mihomo core** — automatic architecture detection, one-click download and updates from GitHub Releases (**Stable** and **Alpha** channels), pre-flight `clash -t` config validation, service control, and hot reload via the Mihomo API.
+- **Native firewall & routing engine** — atomic `nft -f -` ruleset (`table inet clash`) or `iptables`/`ipset` backend; **TPROXY**, **HYBRID**, **TUN**, **MIXED**, and **MIXED2** capture modes; **Explicit** and **Exclude** interface modes; Keenetic access-policy integration; QUIC and DoT/DoH blocking; port filter; per-client bypass; reserved networks; DSCP bypass and force-proxy marks; optional router self-traffic proxying; forwarded IPv6 drop; and a gateway kill switch.
+- **Policy routing** — managed `ip rule` / `ip route` rules (routing tables `100`/`101`; fwmarks `0x1`/`0x2`/`0x3` on OpenWrt and Linux, or `0x80000000`/`0x10000000` with mask `0x90000000` on Keenetic).
+- **Secure by default** — mandatory admin password setup on first run (`PBKDF2-HMAC-SHA256`), `HMAC`-signed session cookies, CSRF protection, and optional HTTPS (` TLS`).
+- **Cross-platform** — first-class support for **OpenWrt**, **Keenetic (Entware)**, and **generic Linux (systemd)**.
 
-## Directory layout
+---
 
-Everything lives under `/opt/clash` by default (`SSCLASH_ROOT` overrides this):
+## Quick Start
 
-```
-/opt/clash/
-├── bin/ssclash          # SSClash daemon
-├── bin/clash            # Mihomo kernel
-├── config.yaml
-├── configs/             # named profiles
-├── local-rules/         # user rule lists (was lst/ in LuCI SSClash)
-├── rule-providers/      # downloaded rule providers (was ruleset/)
-├── proxy-providers/     # downloaded proxy providers (was proxy_providers/)
-├── subscriptions/       # pasted link lists (file providers)
-├── ui/                  # external dashboard files
-├── .ssclash/            # settings, password, session, doh-custom.txt, OpenWrt dnsmasq backup
-└── (runtime) /tmp/ssclash/  # caches, tmpfs symlinks, subscription and DoH list IP caches
-```
+### 1. Install SSClash
 
-### Migrating from LuCI SSClash
+The autoinstaller detects your OS and CPU architecture, installs `/opt/clash/bin/ssclash`, downloads the latest **Mihomo** kernel (if not already present or if a newer release is available), and registers the system service.
 
-| LuCI SSClash | SSClash (Go) |
-|---|---|
-| `lst/` | `local-rules/` |
-| `ruleset/` | `rule-providers/` |
-| `proxy_providers/` | `proxy-providers/` |
-| `settings` at root | `.ssclash/settings` |
-| `/tmp/clash/` | `/tmp/ssclash/` |
+> [!NOTE]
+> If SSClash is already running, the installer **stops the service first** so active transparent-proxy rules do not interrupt GitHub downloads and binaries can be replaced safely.
 
-The Go edition reads the same `config.yaml` and Mihomo kernel path. Rename directories as above if you upgrade in place.
+#### OpenWrt
 
-# Setup Guide
-
-## Autoinstall scripts
-
-Each installer fetches the matching release binary, sets up `/opt/clash`, downloads the Mihomo kernel when that release is newer than the one already installed, and registers the OS service. Use `--no-mihomo` to skip the kernel. Use `--update` on an existing install to replace only the SSClash binary and Mihomo; mode, listen address, TLS and the service file stay as they are.
-
-**OpenWrt** (run on the router):
+Stock OpenWrt includes `wget` (`uclient-fetch`) and `ash` out of the box. Run on the router over SSH:
 
 ```bash
-wget -T 30 -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash
+wget -O /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh && ash /tmp/install-ssclash-go.sh
 ```
 
-SSClash **stops itself** before upgrade when the service is already running (so GitHub downloads work through transparent proxy and binaries can be replaced safely).
+#### Keenetic (Entware)
 
-**Generic Linux** (systemd):
+1. Set up **Entware** on a USB drive.
+2. In the Keenetic web UI (**General system settings → Components**), make sure these components are installed, and **reboot the router** if prompted:
+   - **Open packages (Entware)**
+   - **Ext file system**
+   - **Netfilter subsystem kernel modules** *(required for kernel `xt_TPROXY` / netfilter support)*
+3. Connect to Entware over SSH as `root`. Because firmware BusyBox `wget` lacks HTTPS support (`not an http or ftp url`), install `wget-ssl` and `ca-certificates` from Entware first, then run the installer:
 
 ```bash
-curl -fsSL https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | sudo sh
+opkg update && opkg install wget-ssl ca-certificates && export PATH="/opt/bin:/opt/sbin:$PATH" && wget -O /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh && ash /tmp/install-ssclash-go.sh
 ```
 
-**Keenetic** (Entware over SSH as root). Firmware BusyBox `wget` has no HTTPS (often segfaults / `not an http or ftp url`). Install Entware `wget-ssl` first:
+#### Generic Linux (systemd)
+
+Requires `systemd`, `ip` (`iproute2`), `nft` or `iptables`, and `curl`:
 
 ```bash
-opkg update && opkg install wget-ssl ca-certificates
-export PATH="/opt/bin:/opt/sbin:$PATH"
-wget -T 30 -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash
+curl -fsSL -o /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh && sudo sh /tmp/install-ssclash-go.sh
 ```
 
-### Install options (all installers)
+---
 
-| Flag | Purpose |
-|---|---|
-| `--port <n>` | Web UI port (default `9091`, all interfaces) |
-| `--bind <ip>` | Bind web UI to this IP (with `--port`) |
-| `--addr <host:port>` | Full `SSCLASH_ADDR` (overrides `--port` / `--bind`) |
-| `--root <path>` | OpenWrt only — install directory (default `/opt/clash`; kept on upgrade unless passed again) |
-| `--tls-cert <path>` | TLS certificate (PEM); requires `--tls-key` |
-| `--tls-key <path>` | TLS private key (PEM); requires `--tls-cert` |
-| `--tls-self-signed` | Generate `$ROOT/.ssclash/tls.{crt,key}` (needs `openssl`) |
-| `--mode gateway\|server` | Linux only — gateway (transparent proxy) or server. Server seeds `config.yaml` with an inbound `listeners:` example when that file is still missing |
-| `--version <tag>` | Download a specific release tag (default: latest) |
-| `--from <path>` | Install a local binary instead of downloading |
-| `--no-mihomo` | Skip Mihomo kernel download (all installers) |
-| `--update` | Replace the SSClash binary and Mihomo only. Keeps mode, listen address, TLS and the service file. Requires an existing install. `--from`, `--version` and `--no-mihomo` are allowed. Do not combine with `--mode`, `--port`, `--bind`, `--addr`, `--root` or `--tls-*` |
+### 2. First Run
 
-Examples:
+1. Open `http://<router-or-host-ip>:9091` in your browser (or your custom `--port` / HTTPS address) and **choose an admin password**.
+   - The web UI is available in **English** and **Russian**. The language switcher in the header remembers your selection (`Auto` uses your browser language). Changing the language reloads the page, and signing out does not reset the selected language.
+2. Open the **Configuration** tab — SSClash creates a working default `config.yaml` on first start. Add your proxy subscription (**Add subscription**), paste share links, or load a full remote config (**Load from URL**).
+3. Click **Start** in the top toolbar.
+
+> [!TIP]
+> If you ran the installer with `--no-mihomo` or the kernel download was interrupted, open **Settings → Mihomo kernel** and click **Download latest kernel** before starting the service.
+
+---
+
+## Updating SSClash and Mihomo
+
+### Update from the Web UI (Recommended)
+
+You can update both SSClash and the Mihomo kernel directly from **Settings** without SSH:
+
+1. **Update SSClash**: Open **Settings → SSClash** (top card). Click **Check updates** to query the latest stable GitHub release, then click **Download update**. SSClash replaces `/opt/clash/bin/ssclash` and restarts the service automatically. *(On systemd Linux, the service user must have permission to run `systemctl restart ssclash.service`.)*
+2. **Update Mihomo kernel**: Open **Settings → Mihomo kernel**. Select the release channel (**Stable** for the latest release, or **Alpha** for `mihomo-linux-*-alpha-*` builds) and click **Check updates** or **Download / Update**.
+   - On `amd64`, downloading the kernel from the web UI selects a build the processor can execute: the standard `mihomo-linux-amd64` asset is built for `x86-64-v3`, while older processors receive a `v1` or `compatible` build if present in the release.
+   - On small flash storage, SSClash streams the new kernel directly over the old binary without keeping a second uncompressed copy in `/tmp`, and automatically cleans up temporary `.mihomo-new.*` files if a download fails.
+
+### Update via the Installer (`--update`)
+
+Passing `--update` to the installer upgrades **only** the SSClash binary and the Mihomo kernel (when a newer release exists). Your operating mode (`gateway`/`server`), listen address, TLS configuration, `config.yaml`, and service unit/init script are preserved.
+
+**OpenWrt & Keenetic (Entware):**
 
 ```bash
-wget -T 30 -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash -s -- --no-mihomo
-wget -T 30 -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash -s -- --port 8443 --tls-self-signed
-curl -fsSL https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | sudo sh -s -- --from ./ssclash-linux-amd64 --mode gateway
+export PATH="/opt/bin:/opt/sbin:$PATH" && wget -O /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh && ash /tmp/install-ssclash-go.sh --update
 ```
 
-Platform-specific scripts (same behaviour, longer URLs) live under `packaging/{openwrt,linux,keenetic}/`.
-
-## Manual install — OpenWrt
-
-### Step 1: Update package list
-
-For **OpenWrt >= 25** (apk):
+**Generic Linux (systemd):**
 
 ```bash
-apk update
+curl -fsSL -o /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh && sudo sh /tmp/install-ssclash-go.sh --update
 ```
 
-For **OpenWrt < 25** (opkg):
-
-```bash
-opkg update
-```
-
-### Step 2: Install required packages
-
-When installing from GitHub Releases (not from a feed), install these dependencies manually:
-
-- `kmod-tun` — TUN mode
-- `kmod-nft-tproxy` — firewall4 / nftables transparent proxy
-- `iptables-mod-tproxy` — firewall3 / iptables (OpenWrt < 22.03)
-
-```bash
-# nftables (firewall4) on OpenWrt >= 25:
-apk add kmod-tun kmod-nft-tproxy
-
-# nftables on older OpenWrt:
-opkg install kmod-tun kmod-nft-tproxy
-
-# iptables (firewall3):
-opkg install kmod-tun iptables-mod-tproxy
-```
-
-### Step 3: Download and install SSClash
-
-Pick the binary for your architecture from [GitHub Releases](https://github.com/zerolabnet/SSClash-Go/releases). Replace `<tag>` with that release tag:
-
-```bash
-mkdir -p /opt/clash/bin
-curl -L -o /opt/clash/bin/ssclash \
-  https://github.com/zerolabnet/SSClash-Go/releases/download/<tag>/ssclash-linux-arm64
-chmod +x /opt/clash/bin/ssclash
-```
-
-Install the init script from the release tarball:
-
-```bash
-curl -L -o /tmp/ssclash-openwrt-service.tar.gz \
-  https://github.com/zerolabnet/SSClash-Go/releases/download/<tag>/ssclash-openwrt-service.tar.gz
-tar -xzf /tmp/ssclash-openwrt-service.tar.gz -C /
-/etc/init.d/ssclash enable
-/etc/init.d/ssclash start
-```
-
-### Offline update
-
-The first install reaches the package feed (`opkg update` or `apk update`) and stops when that feed is unreachable. Packages already present on the router do not skip this step.
-
-An existing install can be updated without GitHub. Save `packaging/openwrt/install-openwrt.sh` from this repository. `curl` or `wget-ssl` must already be installed: stock `uclient-fetch` (the usual `wget`) makes the script update the package index and stop. Place the new Mihomo kernel at `/opt/clash/bin/clash` (`gunzip` the matching `mihomo-linux-*.gz` and `chmod 755`). `--update` keeps the init script, listen address, TLS and install root.
-
-```bash
-sh /tmp/install-openwrt.sh --update --from /tmp/ssclash-linux-arm64 --no-mihomo
-```
-
-To replace the init script, stop the service and extract `ssclash-openwrt-service.tar.gz` (it contains `etc/init.d/ssclash`):
-
-```bash
-/etc/init.d/ssclash stop
-tar -xzf /tmp/ssclash-openwrt-service.tar.gz -C /
-```
-
-### DNS on OpenWrt
-
-OpenWrt defaults to **OpenWrt dnsmasq upstream** in Settings (not firewall redirect). The two modes are **mutually exclusive** — turning one on turns the other off:
-
-- **OpenWrt dnsmasq upstream** (default) — on **Start**, SSClash adds `127.0.0.1#7874` to dnsmasq, sets `noresolv=1`, and reloads dnsmasq after Mihomo listens. Clients should use the router as DNS (DHCP). Original dnsmasq uci values are backed up under `.ssclash/` and restored on **Stop**.
-- **Firewall redirect** — firewall-only on OpenWrt (dnsmasq unchanged). Redirects LAN port 53 (TCP/UDP) to Mihomo in netfilter. Catches hard-coded public DNS (e.g. `8.8.8.8:53`). Keep `dns.listen` on `0.0.0.0:7874` in `config.yaml`. Redirect applies on all LAN ingress (VLAN and bridge member ports included); WAN is excluded. Switching from upstream clears prior dnsmasq upstream uci.
-
-Switch modes in **Settings** → DNS before **Start** or **Restart**.
-
-### Block DoT / DoH
-
-When Mihomo DNS interception is active (**Firewall redirect** or **OpenWrt dnsmasq upstream**), **Settings** → DNS offers LAN-side drops that run **before** transparent proxy / redirect:
-
-- **Block DoT** — drops TCP/UDP to destination port `853` (e.g. Android Private DNS or a fixed DoT resolver bypassing router DNS).
-- **Block known DoH (dibdot)** — drops TCP/UDP port `443` to IPv4 addresses from the [dibdot DoH IP blocklists](https://github.com/dibdot/DoH-IP-blocklists) (GPL-3; downloaded at runtime, cached under tmp, refreshed daily). **Warning:** HTTPS to those IPs (including `1.1.1.1` and `8.8.8.8`) stops working from affected LAN clients. IPv6 and DoH not on port 443 are not covered.
-- **Block DoH (custom list)** — same `:443` drop for your own `https://host/path` URLs (one per line); hosts are resolved to IPv4 on save. Persistent file: `.ssclash/doh-custom.txt` (included in backup).
-
-Rules apply on LAN ingress; WAN is skipped. **Bypass clients (firewall)** skip these drops. The router itself is unaffected (no OUTPUT rules). IPv4 only.
-
-On the **iptables** backend, DoH blocking requires working **ipset** (installed with `iptables-mod-tproxy` on OpenWrt; Keenetic netfilter uses `xt_set`). Without ipset, only Block DoT applies and a gateway log warning is emitted.
-
-Optional **conntrack-tools** (the `conntrack` CLI on PATH): LAN flows to port `53` are cleared when **Firewall redirect** turns on or off, and on **Stop** if redirect was installed. Port `853` is cleared only when Block DoT turns on. A repeated Apply with the same flags does not touch conntrack. Keenetic repair clears a port only when repair actually restored redirect or DoT DROP rules, not when it only re-seated an existing jump. **nft** and **iptables** share kernel conntrack. Without the tool, new packets follow the new rules immediately but old sessions linger until timeout, with a one-time gateway log warning when redirect or Block DoT is on. Installers do not install it — use `opkg install conntrack-tools` on OpenWrt or Entware if you want immediate teardown.
-
-On **Keenetic TUN** these drops apply: SSClash marks TCP and UDP into `clash-tun`.
-
-Toggle changes take effect on **Start**, **Restart**, or firewall **Apply**. **Refresh list** updates dibdot immediately.
-
-## Manual install — generic Linux
-
-Prerequisites: systemd, `nft` or `iptables`, `ip`.
-
-```bash
-curl -fsSL https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | sudo sh -s -- --from ./ssclash-linux-amd64 --mode gateway
-```
-
-### Offline install
-
-Save `packaging/linux/install-linux.sh` from this repository. `install-ssclash-go.sh` still downloads that script from GitHub. The installer writes the systemd unit itself; the release has no Linux service tarball. Place the Mihomo kernel at `/opt/clash/bin/clash` (`gunzip` the matching `mihomo-linux-*.gz` and `chmod 755`). The asset name follows `uname -m` (`x86_64` → `ssclash-linux-amd64`, `aarch64` → `ssclash-linux-arm64`). `nft` or `iptables`, and `ip`, must already be installed. In gateway mode the script tries `apt-get install conntrack ipset` when those commands are missing; install the packages yourself when the distro feed is unreachable. `apt-get` failure is a warning and the install continues.
-
-```bash
-sudo sh /tmp/install-linux.sh --from /tmp/ssclash-linux-amd64 --mode gateway --no-mihomo
-```
-
-An existing install keeps mode, listen address, TLS and the unit:
-
-```bash
-sudo sh /tmp/install-linux.sh --update --from /tmp/ssclash-linux-amd64 --no-mihomo
-```
-
-Gateway mode applies firewall, policy routing and platform DNS interception when you press **Start** (OpenWrt: dnsmasq upstream by default; Keenetic/Linux: firewall redirect). Server mode runs Mihomo only. A fresh `--mode server` install seeds `config.yaml` with an inbound `listeners:` example; an existing file is kept.
-
-## Manual install — Keenetic
-
-Install Entware on USB first. Enable **Open packages**, **Ext file system**, **Netfilter kernel modules** in Keenetic web UI → Components (reboot after enabling Netfilter — kernel `xt_TPROXY` / netfilter support; this does **not** always install a userspace `iptables` binary). SSClash needs an **xtables** userspace CLI: firmware `/sbin/iptables` when present, otherwise the installer runs `opkg install iptables-legacy` or `opkg install iptables` (either is fine if `iptables -V` does not say `nf_tables`). NDMS is **not** a TPROXY API: it rebuilds `filter`/`nat`/`mangle` and drops jumps into custom chains. The supported integration is Keenetic's official [`/opt/etc/ndm/netfilter.d`](https://support.keenetic.com/hero/kn-1012/en/42407-opkg-component-description.html) hook, which restores those jumps with the resolved xtables `iptables` binary (24-second timeout — the hook does not re-run a full Apply).
-
-Policy routing needs the full iproute2 binary; BusyBox's `ip` applet is often
-built without `rule` support. The installer runs `opkg install ip-full` when `ip rule` fails.
-
-```bash
-opkg update && opkg install wget-ssl ca-certificates
-export PATH="/opt/bin:/opt/sbin:$PATH"
-wget -qO- https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh | ash
-```
-
-### Offline install
-
-Use this when the router cannot reach GitHub or the Entware feed. Download the files on another computer and copy them to the router (SCP or USB). `install-ssclash-go.sh` still fetches the platform script from GitHub, so the offline run uses `packaging/keenetic/install-keenetic.sh` copied from this repository.
-
-Pick the release assets for `uname -m`: `aarch64` / `arm64` → `ssclash-linux-arm64` and `mihomo-linux-arm64-<tag>.gz`; `armv7l` → `armv7`; `mipsel` or `mips` → `hardfloat` when `opkg print-architecture` contains `hard`, otherwise `softfloat`. Mihomo tags and archives come from the Mihomo releases. The SSClash release also has `ssclash-keenetic-service.tar.gz`, which contains `opt/etc/init.d/S99ssclash`.
-
-Entware packages the installer would fetch from the feed, plus every package named in their `Depends:` lines for this architecture: `iptables-legacy` (or `iptables` when `iptables -V` does not say `nf_tables`), `ip-full`, `conntrack`, `ipset`. Skip `iptables-legacy` when firmware `/sbin/iptables` is already an xtables build. `wget-ssl` and `ca-certificates` are only for the online installer. BusyBox `wget` or `curl` must still be on `PATH`: the script checks that one of them exists.
-
-Lay the files out so the init script sits next to the installer. `--from` does not download the service tarball.
-
-```bash
-mkdir -p /tmp/ssclash-offline/etc/init.d /tmp/ssclash-offline/ipk /tmp/ssclash-svc
-# from the computer: install-keenetic.sh, the binary, the .ipk files, the service tarball
-tar -xzf /tmp/ssclash-keenetic-service.tar.gz -C /tmp/ssclash-svc
-cp /tmp/ssclash-svc/opt/etc/init.d/S99ssclash /tmp/ssclash-offline/etc/init.d/
-export PATH="/opt/bin:/opt/sbin:$PATH"
-opkg install /tmp/ssclash-offline/ipk/*.ipk
-mkdir -p /opt/clash/bin
-gunzip -c /tmp/mihomo-linux-arm64-<tag>.gz > /opt/clash/bin/clash
-chmod 755 /opt/clash/bin/clash
-sh /tmp/ssclash-offline/install-keenetic.sh --from /tmp/ssclash-offline/ssclash-linux-arm64 --no-mihomo
-```
-
-The installer copies the binary to `/opt/clash/bin/ssclash` and `S99ssclash` to `/opt/etc/init.d/S99ssclash`. `--no-mihomo` leaves `/opt/clash/bin/clash` as you placed it. Replace that file the same way when you update the kernel offline.
-
-An existing install updates without GitHub. `--update` keeps the init script, listen address, TLS and settings:
-
-```bash
-sh /tmp/ssclash-offline/install-keenetic.sh --update --from /tmp/ssclash-offline/ssclash-linux-arm64 --no-mihomo
-```
-
-Default: **HYBRID** + Exclude mode, **Auto fake-ip whitelist** enabled. NAT is handled by KeeneticOS.
-DNS interception defaults to **Firewall redirect** in Settings (LAN port 53 → Mihomo).
-Clients should use the router as DNS (Keenetic DHCP).
-
-KeeneticOS rebuilds netfilter on configuration save, WAN reconnect and component
-changes, which drops the jumps into the SSClash chains. Start installs an NDMS
-hook at `/opt/etc/ndm/netfilter.d/50-ssclash.sh` that re-inserts `PREROUTING -j CLASH`
-(and DNS/QUIC rules) with the resolved xtables `iptables` binary. A full daemon reload runs only if the
-custom chains themselves are gone. Stop removes the hook.
-
-**Firewall backend on Keenetic** is fixed to **iptables** (xtables userspace, not nftables). Settings
-does not offer Auto or nftables. The installer seeds `FIREWALL_BACKEND=iptables`;
-Save/API normalize any other value to iptables. Auto would also resolve to iptables
-at runtime, but forced nft is refused at Apply. Entware builds whose `iptables -V` reports `nf_tables`
-cannot intercept Keenetic LAN forwarding — use xtables instead (`/sbin/iptables`, `iptables-legacy`, or
-Entware `iptables` when it is xtables). The installer runs `opkg install iptables-legacy` or
-`opkg install iptables` when no suitable CLI exists. **Netfilter subsystem kernel modules** (Components)
-are still required for kernel support (`xt_TPROXY`, …). In **TUN** mode Mihomo starts with `DISABLE_NFTABLES=1` because Keenetic has no nftables for LAN forwarding.
-
-**Recommended proxy modes on Keenetic (in order):** **HYBRID** (installer default — SSClash
-nat DNAT + TPROXY, all Options features, works with router HTTPS on 443), **MIXED2**
-(TCP like HYBRID, UDP via `clash-tun` — better QUIC/UDP, no TCP 443 TPROXY issue),
-**TPROXY** (if you move router management HTTPS off TCP 443, e.g. 8443), **TUN**
-(SSClash MARK of TCP and UDP into `clash-tun`, same as OpenWrt).
-**MIXED** (TCP TPROXY + UDP TUN) inherits the Keenetic TCP `:443` TPROXY limitation;
-rarely useful here — prefer **HYBRID** or **MIXED2**.
-
-**Keenetic access policy:** Settings → **Respect Keenetic access
-policy** — select policies from the router (Internet → Connection Policies). SSClash matches
-NDMS connmarks in firewall rules so only devices assigned to those policies enter the
-proxy path. This includes **TUN**.
-
-**RCI access token (KeeneticOS 5.2+):** From firmware **5.2** onward, local RCI on
-`127.0.0.1:79` requires an **RCI access token**. SSClash uses RCI for
-access-policy and hotspot client names. Settings → **Keenetic access policy** → **RCI access
-token** — create a token in the router web UI under **Users and access**, paste it here, and
-**Save**. Leave empty on older KeeneticOS that still accepts loopback RCI without a token. If
-RCI is missing or rejected, SSClash falls back to `ndmc`; lists still load but names may not
-match the router web UI.
-
-**TPROXY on Keenetic and TCP 443:** KeeneticOS uses port 443 internally for `xt_TPROXY`;
-LAN TCP to `:443` often never reaches SSClash (TPROXY counters stay at zero). Use **HYBRID**
-(default), move router management HTTPS off TCP 443 in the Keenetic web UI (any port
-except 443, e.g. 8443), or use **TUN**.
-
-**Keenetic TUN** uses the same capture as OpenWrt and Linux: SSClash marks traffic into `clash-tun` (`auto-route: false`, `auto-redirect: false`). Access policy, bypass clients, port filter, and reserved networks apply. After upgrading from a build that used Mihomo `auto-redirect`, **Stop then Start**.
-
-## Proxy modes (Settings)
-
-| Mode | Capture | `config.yaml` (synced on Save / Start) | Notes |
-|---|---|---|---|
-| **TPROXY** | SSClash mangle TPROXY `:7894` | `tproxy-port: 7894` | Default on OpenWrt/Linux |
-| **HYBRID** | TCP nat DNAT → `:7893`, UDP TPROXY `:7894` | `redir-port: 7893`, `tproxy-port: 7894` | Default on Keenetic; full Options |
-| **TUN** | MARK → `clash-tun` (OpenWrt, Linux, and Keenetic) | `tun:` block (`auto-route: false`) | TUN stack in Settings |
-| **MIXED** | TCP TPROXY, UDP MARK → `clash-tun` | `tproxy-port: 7894` + `tun:` | On Keenetic: TCP `:443` TPROXY issue; prefer HYBRID/MIXED2 |
-| **MIXED2** | TCP nat DNAT → `:7893`, UDP MARK → `clash-tun` | `redir-port: 7893` + `tun:` (no `tproxy-port`) | HYBRID TCP path + MIXED UDP path; full Options on Keenetic |
-
-TUN, MIXED and MIXED2 write `tun.stack` from Settings: **system**, **gvisor**, **mixed**, or **mips** (pure-Go [mipstack](https://github.com/MetaCubeX/mipstack), useful on MIPS routers).
-
-When **Save** in Settings changes proxy mode or TUN stack, SSClash rewrites the active
-`config.yaml` profile if it disagrees (same ports/blocks as the table above), validates
-with `clash -t`, then restarts Mihomo when the service is running.
-
-## Update SSClash from Settings
-
-Open **Settings**. The **SSClash** card is above **Mihomo kernel**. Click **Check updates** to read the latest stable GitHub release. Click **Update** to replace `/opt/clash/bin/ssclash` and restart the service. SSClash does not check for updates in the background.
-
-The router must reach GitHub. On Linux, the service account must be allowed to run `systemctl restart ssclash.service`. That is the same permission the service restart already requires.
-
-## Step 4: Mihomo kernel management
-
-The autoinstall scripts download the latest Mihomo kernel automatically. On a small flash filesystem the new kernel replaces the old one instead of keeping both copies, and a failed update removes `.mihomo-new.*` instead of leaving it to fill the disk. Autoinstall streams Mihomo onto the install filesystem and does not keep a second full uncompressed copy in `/tmp`. You can also manage it from the web UI or install manually (see below).
-
-From the web UI, go to **Settings** → **Mihomo kernel**. Pick a **Release channel** (**Stable** is the default: the latest non-prerelease; **Alpha** uses `mihomo-linux-*-alpha-*` assets), then **Check updates** or **Download / Update**. SSClash will:
-
-- Detect the device architecture
-- Check for updates, or download the kernel for the selected channel (Stable: latest non-prerelease; Alpha: `mihomo-linux-*-alpha-*`)
-- Install it to `/opt/clash/bin/clash`
-- Show kernel status and version
-
-**Important:** Restart the SSClash service after a fresh kernel install.
-
-### Manual kernel installation (optional)
-
-Replace `<tag>` with the Mihomo release tag. The archive name is `mihomo-linux-<arch>-<tag>.gz`; the example below is arm64.
+---
+
+## Common Installation Scenarios & Flags
+
+Each command below downloads a fresh copy of the installer to `/tmp/install-ssclash-go.sh` and runs it with the desired flags *(on Keenetic Entware, prepend `export PATH="/opt/bin:/opt/sbin:$PATH" && ` if `/opt/bin` is not already first in `PATH`)*:
+
+- **Dedicated Proxy Server on a Linux VPS (`--mode server`)**
+  Runs Mihomo as an inbound server without gateway firewall or routing rules, binds the web UI to port `8443` with a self-signed HTTPS certificate, and seeds `config.yaml` with an example `listeners:` block:
+  ```bash
+  curl -fsSL -o /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh && sudo sh /tmp/install-ssclash-go.sh --mode server --port 8443 --tls-self-signed
+  ```
+- **Custom Web UI Port & Self-Signed HTTPS on a Router**
+  Changes the web UI port from `9091` to `8443` and generates `$ROOT/.ssclash/tls.{crt,key}` (requires `openssl`):
+  ```bash
+  wget -O /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh && ash /tmp/install-ssclash-go.sh --port 8443 --tls-self-signed
+  ```
+- **Bind Web UI to LAN IP Only**
+  Restricts the web UI listener to a specific interface address instead of `0.0.0.0`:
+  ```bash
+  wget -O /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh && ash /tmp/install-ssclash-go.sh --bind 192.168.1.1 --port 9091
+  ```
+- **Install SSClash Without Downloading Mihomo (`--no-mihomo`)**
+  Useful when you already have a custom `/opt/clash/bin/clash` binary or want to download the kernel later from the Web UI:
+  ```bash
+  wget -O /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh && ash /tmp/install-ssclash-go.sh --no-mihomo
+  ```
+- **Update Only SSClash and Keep Existing Mihomo Kernel (`--update --no-mihomo`)**
+  ```bash
+  wget -O /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh && ash /tmp/install-ssclash-go.sh --update --no-mihomo
+  ```
+
+### Installer Options Reference
+
+| Flag | Description |
+| :--- | :--- |
+| `--port <n>` | Web UI port (default: `9091` on all interfaces). |
+| `--bind <ip>` | Bind the web UI to a specific IP address (used together with `--port`). |
+| `--addr <host:port>` | Full `SSCLASH_ADDR` listen address (overrides `--port` and `--bind`). |
+| `--root <path>` | **OpenWrt only** — installation directory (default: `/opt/clash`; preserved across upgrades unless passed again). |
+| `--tls-cert <path>` | Path to a PEM TLS certificate for the web UI (requires `--tls-key`). |
+| `--tls-key <path>` | Path to a PEM TLS private key for the web UI (requires `--tls-cert`). |
+| `--tls-self-signed` | Generate a self-signed certificate at `$ROOT/.ssclash/tls.{crt,key}` (requires `openssl`). |
+| `--mode gateway\|server` | **Linux only** — operating mode: `gateway` (transparent proxy) or `server` (inbound server; seeds a sample `listeners:` block in `config.yaml` on fresh install). |
+| `--version <tag>` | Install a specific SSClash release tag (default: latest release). |
+| `--from <path>` | Install SSClash from a local binary path instead of downloading from GitHub. |
+| `--no-mihomo` | Skip downloading the Mihomo kernel. |
+| `--update` | Upgrade an existing installation (replaces only SSClash and Mihomo; preserves mode, address, TLS, and service file). Can be combined with `--from`, `--version`, and `--no-mihomo`. Do not combine with `--mode`, `--port`, `--bind`, `--addr`, `--root`, or `--tls-*`. |
+
+> [!NOTE]
+> Platform-specific installer scripts with identical behavior are located in `packaging/{openwrt,linux,keenetic}/`.
+
+---
+
+### Offline & Manual Installation
+
+Use the sections below when your router or server cannot reach GitHub or OS package repositories directly.
+
+<details>
+<summary><strong>OpenWrt — Manual & Offline Installation / Update</strong></summary>
+
+#### Manual Installation on OpenWrt
+
+1. **Update package index:**
+   ```bash
+   # OpenWrt >= 25 (apk):
+   apk update
+
+   # OpenWrt < 25 (opkg):
+   opkg update
+   ```
+2. **Install required kernel modules and packages:**
+   - `kmod-tun` — required for TUN, MIXED, and MIXED2 modes
+   - `kmod-nft-tproxy` — transparent proxy support for `firewall4` / `nftables`
+   - `iptables-mod-tproxy` — transparent proxy support for legacy `firewall3` / `iptables` (OpenWrt < 22.03)
+   ```bash
+   # OpenWrt >= 25 (firewall4 / nftables):
+   apk add kmod-tun kmod-nft-tproxy
+
+   # OpenWrt 22.03 – 24.x (firewall4 / nftables):
+   opkg install kmod-tun kmod-nft-tproxy
+
+   # OpenWrt < 22.03 (firewall3 / iptables):
+   opkg install kmod-tun iptables-mod-tproxy
+   ```
+3. **Download and install the SSClash binary and init service:**
+   Pick the binary matching your architecture from [GitHub Releases](https://github.com/zerolabnet/SSClash-Go/releases) and replace `<tag>` with the release version:
+   ```bash
+   mkdir -p /opt/clash/bin
+   wget -O /opt/clash/bin/ssclash \
+     https://github.com/zerolabnet/SSClash-Go/releases/download/<tag>/ssclash-linux-arm64
+   chmod +x /opt/clash/bin/ssclash
+
+   wget -O /tmp/ssclash-openwrt-service.tar.gz \
+     https://github.com/zerolabnet/SSClash-Go/releases/download/<tag>/ssclash-openwrt-service.tar.gz
+   tar -xzf /tmp/ssclash-openwrt-service.tar.gz -C /
+   /etc/init.d/ssclash enable
+   /etc/init.d/ssclash start
+   ```
+
+#### Offline Update on OpenWrt
+
+> [!IMPORTANT]
+> A first-time run of `install-openwrt.sh` refreshes the package index (`opkg update` / `apk update`) and stops if the feed is unreachable, even when packages are already installed. For an existing installation, you can update completely offline.
+
+1. Copy `packaging/openwrt/install-openwrt.sh` from this repository and the matching `ssclash-linux-*` binary to `/tmp/` on the router. (`curl` or `wget-ssl` must already be installed; if only stock `uclient-fetch` is present, the script will attempt to update the package feed.)
+2. Optionally, unpack the new Mihomo binary to `/opt/clash/bin/clash` (`gunzip` the matching `mihomo-linux-*.gz` and run `chmod 755 /opt/clash/bin/clash`).
+3. Run the offline update (preserves the init script, listen address, TLS settings, and install root):
+   ```bash
+   sh /tmp/install-openwrt.sh --update --from /tmp/ssclash-linux-arm64 --no-mihomo
+   ```
+4. To update the init script offline as well:
+   ```bash
+   /etc/init.d/ssclash stop
+   tar -xzf /tmp/ssclash-openwrt-service.tar.gz -C /
+   /etc/init.d/ssclash start
+   ```
+
+</details>
+
+<details>
+<summary><strong>Keenetic (Entware) — Offline Installation & Update</strong></summary>
+
+Use this procedure when the Keenetic router has no direct access to GitHub or the Entware package repository. Download the required files on another computer and copy them to `/tmp` on the router via SCP or USB.
+
+1. **Select the right binaries for your CPU (`uname -m`):**
+   - `aarch64` / `arm64` → `ssclash-linux-arm64` and `mihomo-linux-arm64-<tag>.gz`
+   - `armv7l` → `ssclash-linux-armv7` and `mihomo-linux-armv7-<tag>.gz`
+   - `mipsel` / `mips` → `hardfloat` if `opkg print-architecture` contains `hard`, otherwise `softfloat`
+   - Also download `ssclash-keenetic-service.tar.gz` (contains `opt/etc/init.d/S99ssclash`) and `packaging/keenetic/install-keenetic.sh`.
+2. **Download required Entware `.ipk` packages (plus their `Depends:`):**
+   - `ip-full`, `conntrack`, `ipset`
+   - `iptables-legacy` (or `iptables` if `iptables -V` does not report `nf_tables`). You can skip `iptables-legacy` if firmware `/sbin/iptables` is already an `xtables` binary.
+   - *(Note: BusyBox `wget` or `curl` must exist on `PATH` because the installer checks for one of them.)*
+3. **Prepare the layout and run the offline installer:**
+   ```bash
+   mkdir -p /tmp/ssclash-offline/etc/init.d /tmp/ssclash-offline/ipk /tmp/ssclash-svc
+   # Copy install-keenetic.sh, ssclash binary, .ipk files, and ssclash-keenetic-service.tar.gz to /tmp/
+
+   tar -xzf /tmp/ssclash-keenetic-service.tar.gz -C /tmp/ssclash-svc
+   cp /tmp/ssclash-svc/opt/etc/init.d/S99ssclash /tmp/ssclash-offline/etc/init.d/
+
+   export PATH="/opt/bin:/opt/sbin:$PATH"
+   opkg install /tmp/ssclash-offline/ipk/*.ipk
+
+   mkdir -p /opt/clash/bin
+   gunzip -c /tmp/mihomo-linux-arm64-<tag>.gz > /opt/clash/bin/clash
+   chmod 755 /opt/clash/bin/clash
+
+   sh /tmp/ssclash-offline/install-keenetic.sh --from /tmp/ssclash-offline/ssclash-linux-arm64 --no-mihomo
+   ```
+4. **Offline update of an existing Keenetic installation:**
+   ```bash
+   sh /tmp/ssclash-offline/install-keenetic.sh --update --from /tmp/ssclash-offline/ssclash-linux-arm64 --no-mihomo
+   ```
+
+</details>
+
+<details>
+<summary><strong>Generic Linux (systemd) — Offline Installation & Update</strong></summary>
+
+1. Save `packaging/linux/install-linux.sh` from this repository and download the matching binary (`x86_64` → `ssclash-linux-amd64`, `aarch64` → `ssclash-linux-arm64`). The script generates the `systemd` unit directly (no service tarball is needed).
+2. Make sure `ip` and either `nft` or `iptables` are installed. In Gateway mode, the installer also attempts `apt-get install conntrack ipset` if missing (if offline, install `conntrack` and `ipset` beforehand; `apt-get` failure only logs a warning).
+3. Place the Mihomo binary at `/opt/clash/bin/clash` (`chmod 755`).
+4. **Fresh offline install:**
+   ```bash
+   sudo sh /tmp/install-linux.sh --from /tmp/ssclash-linux-amd64 --mode gateway --no-mihomo
+   ```
+5. **Offline update of an existing installation:**
+   ```bash
+   sudo sh /tmp/install-linux.sh --update --from /tmp/ssclash-linux-amd64 --no-mihomo
+   ```
+
+</details>
+
+<details>
+<summary><strong>Manual Mihomo Kernel Installation</strong></summary>
+
+If you prefer to install or replace the Mihomo kernel manually from [MetaCubeX/mihomo Releases](https://github.com/MetaCubeX/mihomo/releases), download `mihomo-linux-<arch>-<tag>.gz`, decompress it to `/opt/clash/bin/clash`, and make it executable:
 
 ```bash
 cd /opt/clash/bin
-curl -L -o clash.gz \
+wget -O clash.gz \
   https://github.com/MetaCubeX/mihomo/releases/download/<tag>/mihomo-linux-arm64-<tag>.gz
 gunzip clash.gz && chmod +x clash
 ```
 
-See the [Mihomo releases page](https://github.com/MetaCubeX/mihomo/releases) for other architectures.
+Restart the SSClash service after replacing the kernel.
 
-## Step 5: Configure interface processing mode
+</details>
 
-SSClash offers two interface processing modes:
+---
 
-### Explicit mode (recommended)
+## Operating Modes & Proxy Modes
 
-- Processes traffic **only** on selected interfaces — nothing else reaches Mihomo at the firewall level
-- Best when you want tight control over which LAN/VLAN or clients enter the proxy path
-- Often combined with fake-ip whitelist and `SRC-IP-CIDR` rules in `config.yaml` (see Step 7)
+### Gateway vs. Server Mode
 
-### Exclude mode (simple default)
+SSClash operates in one of two modes (**Settings → Operating mode**):
 
-- Proxies **all** traffic except interfaces you pick (typically WAN)
-- Easiest whole-LAN setup if you do not need per-interface split
-- Which destinations are proxied is still decided by Mihomo rules in `config.yaml`
+- **Gateway** *(default on routers)* — Transparent-proxy gateway that intercepts LAN traffic with firewall rules, policy routing, and DNS redirection.
+- **Server** — Runs the Mihomo core only without touching firewall rules, policy routing, or system DNS. Enables the visual **Listeners** builder on the **Configuration** tab for configuring inbound proxy listeners (`listeners:`).
 
-In Exclude mode, **Auto-detect WAN** adds the detected WAN to the bypass list and **Auto-detect LAN** is inactive; in Explicit mode, **Auto-detect LAN** adds the detected LAN to the included list and **Auto-detect WAN** is inactive.
+### Proxy Modes (Gateway)
 
-### Additional settings
+When **Save & Apply** or **Start** runs, SSClash automatically synchronizes the required port and `tun:` settings in the active `config.yaml`, validates the file with `clash -t`, and applies the netfilter/routing rules:
 
-- **OpenWrt dnsmasq upstream** — Settings → DNS (default on OpenWrt). Points dnsmasq at Mihomo `:7874`; mutually exclusive with firewall redirect (see [DNS on OpenWrt](#dns-on-openwrt)).
-- **Firewall redirect** — Settings → DNS. Default on Keenetic and generic Linux; optional on OpenWrt. Redirects LAN port 53 (TCP/UDP) to Mihomo `:7874`.
-- **Block DoT / Block DoH (dibdot) / Block DoH (custom)** — Settings → DNS when Mihomo DNS interception is active; see [Block DoT / DoH](#block-dot--doh).
-- **Proxy router traffic** — Settings → Options, Gateway only, off by default. Sends the router's own outbound IPv4 TCP/UDP through Mihomo with the same firewall options as LAN clients (reserved networks, bypass clients, port filter, fake-ip whitelist). Keenetic access policies do not apply to the router's own traffic (only LAN clients are matched by policy). HYBRID and MIXED2 DNAT router TCP to 127.0.0.1:7893; other modes use policy-route marks. With firewall DNS redirect, the router's own port 53 goes to Mihomo so fake-ip works for the router. Kill switch does not apply (LAN forward drop only). Turning it off takes effect on the next Apply.
-- **DSCP marks** — Settings → Options, Gateway only, off until a list has a value. A DSCP value is a mark on the IP packet. Set it in the client operating system, then type the same number here, so one application or device can skip the proxy or be forced through it while the rest of the LAN stays as configured. **DSCP bypass** (example 62) skips intercept, firewall DNS redirect, the QUIC block, and Block DoH/DoT. **DSCP force proxy** (example 63) skips interface selection and a Keenetic access policy, ignores fake-ip and the port allowlist, and does not skip the QUIC block or Block DoH/DoT. Takes effect on the next Apply.
-- **Kill switch** — Settings → Options, Gateway only, off by default. While it is on and Mihomo is not running, LAN clients cannot reach the internet: forwarded traffic toward the WAN is dropped. The panel, SSH and the router's own traffic stay up. Existing WAN port-forwards (DNAT) still pass. When the WAN interface is known, LAN-to-LAN is left alone; when it is not, all forwarding is dropped. Forwarded IPv6 is dropped for the same window. Turning the option on while the proxy is already running changes nothing until the next stop. Turning it off lifts the drop immediately. Server mode never arms it. On Keenetic the NDMS hook stays while the option is on. On OpenWrt, firewall include `firewall.ssclash_ks` (`/var/etc/ssclash-ks.include`) reapplies the drop after a firewall4 reload. On generic Linux the drop remains until SSClash removes it. The window after boot before the SSClash process starts, and a SIGKILL before cleanup, are not covered.
-- **Drop forwarded IPv6** — Settings → Options, Gateway only, off by default. Drops IPv6 the router would forward, including excluded interfaces and WAN-to-LAN. The router keeps its own IPv6. AAAA answers are not filtered and IPv6 forwarding is not switched off. If `ip6tables` is missing, Apply still succeeds and the gateway log warns.
-- **Block QUIC traffic** — blocks UDP/443 to improve proxy effectiveness (YouTube, etc.)
-- **Reserved networks (firewall)** — destination IPv4 CIDRs that skip transparent-proxy marking (Settings → Options). Defaults include RFC special-use ranges and CGNAT `100.64.0.0/10` (Tailscale/Headscale); remove that prefix if Tailnet should go through Mihomo. Mihomo `private-ips` rules are separate. In **TPROXY**, **HYBRID** and **MIXED**, table `100` also gets a scope-link route for each connected IPv4 prefix on an intercepted interface, so a fwmark source lookup still succeeds when Tailscale sets `src_valid_mark=1`. **TUN** and **MIXED2** do not add these routes.
-- **Port filter (firewall)** — destination TCP/UDP ports handled in netfilter *before* Mihomo (Settings → Options). **Bypass** never enters the core (e.g. fixed BitTorrent listen ports). **Proxy-only** (when non-empty) marks only listed ports — useful on weak routers so random torrent peers never enter the core. Empty lists keep the previous “all ports” behaviour. This is not the same as Mihomo `DST-PORT` rules.
-- **Bypass clients (firewall)** — source IPv4 CIDRs that skip transparent-proxy marking *and* DNS redirect, so those LAN hosts never enter Mihomo (Settings → Options). Not `config.yaml` `SRC-IP-CIDR` (that still sends packets into the core). Empty = off. With fake-ip, set a real DNS on the device. On **OpenWrt dnsmasq upstream** (default), the bypass list does not change DNS for clients using router DNS — they still resolve via dnsmasq → Mihomo; set a public DNS on bypassed clients. On **OpenWrt firewall redirect**, bypass skips DNS redirect (same as Keenetic/Linux) — use a public DNS on the bypassed client.
-- **Store rules and proxy providers in RAM** — symlinks `rule-providers/` and `proxy-providers/` to tmpfs to reduce NAND wear
-- **Add HWID headers to subscriptions** — Remnawave-compatible 16-character HWID on proxy-provider requests (also used when fetching a remote full config URL)
-- **Backup / restore** — export or import `.ssclash/` settings and lists (including `doh-custom.txt`) from the Settings page
-- **Web UI port and TLS** — set via install flags or `SSCLASH_ADDR` / `SSCLASH_TLS_*` in the init script or systemd unit
-- **NAT masquerade on WAN** — Settings → Linux gateway host, generic Linux in Gateway mode only. Runtime MASQUERADE for LAN clients that use this host as their default gateway. Applied when the proxy starts; nothing is written to `/etc`. Optional WAN interface; empty uses the current default-route interface.
-- **Periodic maintenance** — its own Settings card. **Auto-refresh subscription IPs** re-resolves proxy server IPs and updates firewall bypass sets (like a WAN-up refresh); in Server mode the same control only refreshes the local cache. **Auto-refresh fake-ip whitelist** is Gateway only: while the proxy runs, it rebuilds whitelist CIDRs from the same sources as Auto fake-ip whitelist and syncs nft/ipset. **Interval (minutes)** defaults to 30, accepts 5–1440, and applies while the proxy is running.
-- **Firewall backend** — Settings → Traffic interception. On OpenWrt and generic Linux: **Auto**, **nftables**, or **iptables**. Keenetic has no switch.
+| Mode | Traffic Capture Mechanism | `config.yaml` (auto-synced) | Best For / Notes |
+| :--- | :--- | :--- | :--- |
+| **TPROXY** | `mangle` TPROXY to `:7894` (TCP & UDP) | `tproxy-port: 7894` | **Default on OpenWrt & Linux.** Uses policy-routing marks; no `clash-tun` device needed. |
+| **HYBRID** | TCP via `nat` DNAT → `127.0.0.1:7893`; UDP via TPROXY `:7894` | `redir-port: 7893`, `tproxy-port: 7894` | **Default on Keenetic.** Supports all SSClash firewall options and works with router HTTPS on port 443. |
+| **TUN** | Packet mark (`fwmark`) → `clash-tun` (TCP & UDP) | `tun:` block (`auto-route: false`, `auto-redirect: false`) | Full L3 tunnel on OpenWrt, Linux, and Keenetic. Selectable stack in Settings. |
+| **MIXED** | TCP via TPROXY `:7894`; UDP via `clash-tun` | `tproxy-port: 7894` + `tun:` | Split path when TPROXY handles UDP/QUIC poorly. *(Avoid on Keenetic if router HTTPS is on 443 — use **MIXED2** instead.)* |
+| **MIXED2** | TCP via `nat` DNAT → `127.0.0.1:7893`; UDP via `clash-tun` | `redir-port: 7893` + `tun:` *(no `tproxy-port`)* | **Recommended on Keenetic for heavy UDP/QUIC:** combines HYBRID TCP compatibility with `clash-tun` UDP. |
+
+**TUN Stack (`tun.stack`):** For **TUN**, **MIXED**, and **MIXED2**, you can choose the stack in **Settings**:
+- **`system`** *(default)* — kernel network stack; best performance on Linux and OpenWrt.
+- **`gvisor`** — userspace network stack; try if `system` is unstable on your platform.
+- **`mixed`** — `system` stack for TCP + `gvisor` stack for UDP.
+- **`mips`** — pure-Go userspace stack ([mipstack](https://github.com/MetaCubeX/mipstack)), designed for MIPS routers where `system` or `gvisor` is unavailable or unstable.
+
+---
+
+### Platform Notes: Keenetic
+
+- **Recommended Proxy Modes on Keenetic (in order):**
+  1. **HYBRID** *(installer default)* — full SSClash firewall features; no conflict with Keenetic management HTTPS on TCP port 443.
+  2. **MIXED2** — same `nat` DNAT path for TCP as HYBRID, plus `clash-tun` for better UDP/QUIC handling.
+  3. **TPROXY** — works only if you move the Keenetic web UI HTTPS management port off TCP `443` (e.g. to `8443`).
+  4. **TUN** — SSClash marks TCP and UDP into `clash-tun` (same architecture as OpenWrt). Supports access policies, bypass clients, port filter, and reserved networks. *(If upgrading from an older build that used Mihomo `auto-redirect`, click **Stop** and then **Start**.)*
+- **Keenetic Access Policies:** In **Settings → Keenetic access policy**, enable **Respect Keenetic access policy** and select one or more policies configured in the Keenetic web UI (**Internet → Access policies**). SSClash matches NDMS `connmark` values so only LAN clients assigned to those policies enter the proxy (works in all proxy modes, including **TUN**).
+- **RCI Access Token (KeeneticOS 5.2+):** Starting with KeeneticOS 5.2, local RCI (`127.0.0.1:79`) requires an authentication token for policy filtering and accurate policy/client names. Create a token in the Keenetic web UI under **Users and access**, paste it into **Settings → Keenetic access policy → RCI access token**, and click **Save & Apply**.
+
+<details>
+<summary><strong>Keenetic Architecture Details (iptables, NDMS Netfilter Hook, TCP 443 Limit)</strong></summary>
+
+- **Fixed `iptables` (xtables) Backend:** KeeneticOS does not support kernel `nftables` for LAN forwarding. SSClash locks the firewall backend to `iptables` (`xtables`) and starts Mihomo with `DISABLE_NFTABLES=1` in TUN mode. Entware binaries where `iptables -V` reports `nf_tables` cannot intercept Keenetic LAN traffic and are rejected on start; SSClash uses firmware `/sbin/iptables` or installs `iptables-legacy` / xtables `iptables` automatically.
+- **Full `iproute2` Required:** BusyBox `ip` on Keenetic lacks `ip rule` support. The installer automatically runs `opkg install ip-full` when `ip rule` is unavailable.
+- **NDMS Netfilter Hook (`/opt/etc/ndm/netfilter.d/50-ssclash.sh`):** KeeneticOS flushes and rebuilds `filter`/`nat`/`mangle` tables whenever router settings are saved or WAN reconnects. While running, SSClash installs an official NDMS hook (24-second timeout) that immediately restores `PREROUTING -j CLASH` and DNS/QUIC jumps using the resolved xtables `iptables` binary, running a full reload only if custom chains were deleted.
+- **Why TPROXY Conflicts with TCP Port 443 on Keenetic:** KeeneticOS reserves port 443 internally in `xt_TPROXY` when router HTTPS management listens on 443, preventing LAN HTTPS traffic from reaching Mihomo in `TPROXY` or `MIXED` mode. Using **HYBRID**, **MIXED2**, **TUN**, or moving Keenetic HTTPS management to another port (such as `8443`) avoids this limitation completely.
+
+</details>
+
+---
+
+## Settings & Traffic Control
+
+### Interface Selection Modes
+
+Under **Settings → Traffic interception → Interface mode**, choose how SSClash selects incoming traffic:
+
+- **Explicit mode (`Proxy only selected` — Recommended)**
+  Intercepts traffic **only** on the interfaces you check (for example, a specific LAN bridge or VLAN). Traffic on all other interfaces is ignored at the firewall level and never reaches Mihomo. **Auto-detect LAN** automatically adds the primary LAN interface.
+- **Exclude mode (`Exclude selected` — Simple Default)**
+  Acts as a whole-LAN gateway: intercepts traffic on **all** interfaces except those you select (typically your WAN interface). **Auto-detect WAN** automatically adds the detected WAN interface to the bypass list.
+- **Firewall backend (`Auto` / `nftables` / `iptables`)**
+  Available on OpenWrt and generic Linux under **Settings → Traffic interception**: **Auto** selects `nftables` (`table inet clash`) when `nft` is supported by the kernel and falls back to `iptables` otherwise; you can also force **nftables** or **iptables** explicitly. On Keenetic, the backend is fixed to **iptables** (`xtables`).
+
+---
+
+### DNS Interception & DoT/DoH Blocking
+
+Sending LAN DNS queries to Mihomo (`:7874`) is strongly recommended so domain rules (`DOMAIN-SUFFIX`, `GEOSITE`) and `fake-ip` work properly. Clients should receive the router IP as their DNS server via DHCP.
+
+#### DNS Modes on OpenWrt vs. Keenetic / Linux
+
+- **OpenWrt dnsmasq upstream** *(default on OpenWrt)* — On **Start**, SSClash adds `127.0.0.1#7874` as the upstream server in `dnsmasq` and sets `noresolv=1` (backing up original UCI settings in `.ssclash/` and restoring them on **Stop**).
+- **Firewall redirect** *(default on Keenetic and Linux; optional on OpenWrt)* — Redirects LAN TCP/UDP port `53` directly to Mihomo (`:7874`) via netfilter without modifying `dnsmasq`. Also catches hard-coded public DNS servers (such as `8.8.8.8:53`) on LAN clients. Keep `dns.listen: 0.0.0.0:7874` in `config.yaml`. *(On OpenWrt, **OpenWrt dnsmasq upstream** and **Firewall redirect** are mutually exclusive.)*
+
+#### Blocking Encrypted DNS Bypass (DoT / DoH)
+
+Even when port `53` is intercepted, devices with encrypted DNS (such as Android Private DNS or browsers with DoH enabled) can bypass Mihomo. When DNS interception is active, **Settings → DNS interception** provides three pre-proxy drop switches for LAN clients:
+
+- **Block DoT (port 853)** — Drops LAN TCP/UDP packets to port `853`, forcing clients to fall back to standard DNS through Mihomo.
+- **Block known DoH (dibdot)** — Drops LAN TCP/UDP packets to port `443` for IPv4 addresses in the [dibdot DoH IP blocklists](https://github.com/dibdot/DoH-IP-blocklists) (downloaded at runtime and refreshed daily).
+  > [!WARNING]
+  > Blocking known DoH IPs also blocks direct HTTPS access to those IP addresses (such as `https://1.1.1.1/` or `https://8.8.8.8/`) from filtered LAN clients.
+- **Block DoH (custom list)** — Applies the same port `443` drop to your own list of `https://host/path` URLs (stored in `.ssclash/doh-custom.txt`; hostnames are resolved to IPv4 on save).
+
+> [!NOTE]
+> - DoT/DoH drops apply only to LAN IPv4 traffic; the router itself and **Bypass clients (firewall)** are not affected.
+> - On the `iptables` backend, DoH IP blocking requires `ipset` (`iptables-mod-tproxy` on OpenWrt, `xt_set` on Keenetic).
+> - If `conntrack` (`conntrack-tools`) is installed, SSClash flushes existing LAN sessions on port `53` when toggling Firewall redirect and on port `853` when enabling Block DoT so changes take effect immediately.
+
+---
+
+### Firewall Options & Filtering
+
+All firewall options below are configured in **Settings → Options** (Gateway mode):
+
+| Option | Purpose & Behavior |
+| :--- | :--- |
+| **Block QUIC** | Rejects `UDP/443` on LAN ingress so browsers and apps quickly fall back to `TCP/443` through the proxy (improves YouTube and HTTP/3 proxying). |
+| **Bypass clients (firewall)** | Source IPv4 addresses/CIDRs that completely skip transparent-proxy marking and firewall DNS redirection in all modes (including TUN). Checked *before* Keenetic access policies and Mihomo `SRC-IP-CIDR` rules. *(If you use `fake-ip`, assign a public DNS server directly on bypassed devices, especially when using OpenWrt `dnsmasq` upstream.)* |
+| **Port filter (firewall)** | Filters destination TCP/UDP ports in netfilter *before* Mihomo:<br>• **Bypass destination ports** — traffic to these ports never enters Mihomo (use **Torrent bypass** if your client uses a fixed port range).<br>• **Proxy destination ports only** — only listed ports enter Mihomo. On weak routers, click **Common ports only** (`80, 443, …`) so random high-port BitTorrent traffic stays out of the core. *(If both lists are set, bypass takes priority.)* |
+| **Reserved networks (firewall)** | Destination IPv4 CIDRs that bypass transparent-proxy marking. Includes RFC special-use subnets and CGNAT `100.64.0.0/10` (**Tailscale / Headscale CGNAT** — remove it if you want Tailnet traffic routed through Mihomo; Mihomo `private-ips` rules are separate). *(In **TPROXY**, **HYBRID**, and **MIXED** modes, table `100` also receives a `scope-link` route for each connected IPv4 prefix on an intercepted interface so `fwmark` source lookup succeeds when Tailscale sets `src_valid_mark=1`; **TUN** and **MIXED2** do not add these routes.)* |
+| **Proxy router traffic** | Routes the router's own outbound IPv4 TCP/UDP traffic (`OUTPUT` chain) through Mihomo using the same firewall exclusions as LAN clients. *(Keenetic access policies and the Kill switch do not apply to the router itself.)* |
+| **DSCP marks (firewall)** | Matches IP packet DSCP values set by client OS/apps:<br>• **DSCP bypass** (e.g. `62`) — skips proxy interception, firewall DNS redirect, QUIC block, and DoT/DoH blocks.<br>• **DSCP force proxy** (e.g. `63`) — forces traffic into Mihomo, bypassing interface selection, Keenetic access policies, `fake-ip` destination filtering, and port filter (still respects QUIC and DoT/DoH blocks). |
+| **Drop forwarded IPv6** | Drops transit IPv6 traffic forwarded from LAN clients so clients stay on IPv4 through Mihomo, while the router keeps its own IPv6 connectivity. |
+| **Kill switch** | Blocks LAN-to-WAN internet forwarding whenever the proxy is stopped. Router Web UI, SSH, router self-traffic, LAN-to-LAN traffic, and existing WAN port forwards remain reachable. Persists across `fw4` reloads on OpenWrt (`/var/etc/ssclash-ks.include`) and NDMS rebuilds on Keenetic. |
+
+---
+
+### Maintenance, RAM Storage, HWID & Backups
+
+- **Auto fake-ip whitelist & RAM storage (`Store rule lists in tmpfs`):**
+  - **Auto fake-ip whitelist** automatically rebuilds the `AUTO` block in `local-rules/fakeip-whitelist-ipcidr.txt` on **Start** and **Apply** from inline `IP-CIDR` rules that route to a proxy or proxy group, `IP-CIDR` entries from `rule-providers` referenced by such rules, and `dns.fake-ip-filter` entries (when `fake-ip-filter-mode` is `whitelist` or `rule`). See [Rule Lists & Fake-IP Whitelist](#rule-lists--fake-ip-whitelist) for details.
+  - **Store rule lists in tmpfs** symlinks `rule-providers/` and `proxy-providers/` to RAM (`/tmp/ssclash`) to reduce flash/NAND wear on routers.
+- **Periodic maintenance:**
+  - **Auto-refresh subscription IPs** — periodically re-resolves proxy server hostnames and updates firewall bypass sets (just like a WAN-up refresh).
+  - **Auto-refresh fake-ip whitelist** — periodically rebuilds whitelist CIDRs and syncs `nft`/`ipset` sets while the proxy is running (default interval: `30` minutes, range `5–1440`).
+- **Remnawave compatibility (`Inject HWID headers`):**
+  - Automatically attaches `User-Agent`, `x-hwid` (16-character MD5 derived from LAN MAC or custom), `x-device-os`, `x-ver-os`, and `x-device-model` headers to `proxy-providers` and remote config requests.
+- **NAT masquerade on WAN *(Generic Linux only)*:**
+  - Applies a runtime `MASQUERADE` rule for LAN clients using the Linux machine as their default gateway without modifying files in `/etc`.
+- **Backup & restore:**
+  - Export or restore a single `.tar.gz` archive containing SSClash settings, named config profiles, subscriptions, custom DoH lists, and local rule lists (with optional inclusion of the admin password, external dashboard UI files, and provider caches).
+
+<details>
+<summary><strong>Screenshots: Settings (Gateway & Server Modes)</strong></summary>
 
 <p align="center">
-  <img src=".github/assets/images/screenshots/scr-02.png" alt="Settings — gateway mode on OpenWrt" width="800">
+  <img src=".github/assets/images/screenshots/scr-02.png" alt="Settings — Gateway mode on OpenWrt" width="800">
 </p>
 
 <p align="center">
-  <img src=".github/assets/images/screenshots/scr-03.png" alt="Settings — server mode" width="800">
+  <img src=".github/assets/images/screenshots/scr-03.png" alt="Settings — Server mode" width="800">
 </p>
 
-## Step 6: Clash configuration management
+</details>
 
-Edit `config.yaml` in the built-in ACE editor:
+---
 
-- **Syntax highlighting** for YAML
-- **Live service control** — Start / Stop / Restart in the toolbar
-- **Named profiles** — save and switch configs under `configs/`
-- **Load from URL** (optional) — download a full Mihomo YAML into profile `remote` (Remnawave `/sub/{token}` falls back to `/mihomo`). Auto-update can follow the provider’s `Profile-Update-Interval` or a fixed custom interval (1–168h); **Save settings** changes URL/auto/interval without re-downloading; **Stop remote source** clears the subscription while keeping profile `remote` as a local copy. Independent of proxy-provider refresh. Empty URL keeps local-only behaviour.
-- **Subscription disable/enable** — comment out proxy-provider blocks without deleting them
-- **Open Dashboard** — opens the Mihomo external UI (see Step 9)
-- **Listeners** — Server mode only. **Add listener** on the Configuration page builds an inbound Mihomo listener. The Listeners card appears once at least one listener exists. Outside Server mode the button and the card stay hidden.
+## Web UI Guide
+
+### Configuration, Profiles, Subscriptions & Listeners
+
+The **Configuration** tab provides a full YAML editor with section navigation and subscription management:
+
+- **Named Config Profiles** — create, duplicate, rename, switch, and delete profiles stored in `configs/`.
+- **Proxy Subscriptions** — add HTTPS subscription URLs or paste share links (`vless://`, `vmess://`, `trojan://`, `ss://`, `ssr://`, `hysteria2://`, `tuic://`, `anytls://`, `mieru://`, `socks5://`). Subscriptions can be toggled on/off (commented out in YAML) or updated via the Mihomo API without losing active connections.
+- **Load Full Config from URL (`profile remote`)** — fetches a complete Mihomo YAML into the `remote` profile (Remnawave `/sub/{token}` URLs automatically retry `/sub/{token}/mihomo`) with optional scheduled auto-updates (`Profile-Update-Interval` or custom `1–168h`).
+- **Inbound Listeners *(Server mode only)*** — click **Add listener** in the top action bar to build an inbound Mihomo listener (`listeners:` entry); the **Listeners** card appears once at least one listener exists.
+
+<details>
+<summary><strong>Screenshot: Configuration Editor</strong></summary>
+
+<p align="center">
   <img src=".github/assets/images/screenshots/scr-01.png" alt="Configuration editor" width="800">
 </p>
 
-## Step 7: Local rulesets management
+</details>
 
-Create and manage local rule files for `rule-providers`:
+---
 
-- **Create custom rule lists** with validation
-- **Fake-IP whitelist** (`local-rules/fakeip-whitelist-ipcidr.txt`) — destination IPv4/CIDR list for `fake-ip-filter-mode: whitelist` or `rule`. With **Auto fake-ip whitelist** (Settings), the AUTO block is rebuilt on Start/apply from:
-  - inline `IP-CIDR` rules in `rules:` with a non-DIRECT action (e.g. `PROXY`, a proxy-group name)
-  - IP-CIDR entries in rule-providers referenced by non-DIRECT `RULE-SET` rules
-  - `dns.fake-ip-filter` entries (per filter mode)
-  - `SRC-IP-CIDR` is **not** copied into this file — it is handled separately by the firewall for per-client source matching
-- Use **Regenerate** on the Rule Lists tab after editing rules, or **Save & Reload** / **Start** while auto-sync is enabled
-- Organized file management with collapsible sections
+### Rule Lists & Fake-IP Whitelist
+
+The **Rule Lists** tab manages local classical rule files under `local-rules/` for use with `rule-providers`:
+
+- **Auto-prefix on save** — bare lines automatically receive a Clash rule prefix based on the list filename suffix (`-domain`, `-keyword`, `-ip`, `-src-ip`, `-geoip`, `-geosite`).
+- **One-click insertion** — **Add to config** inserts the list as a `rule-provider` in `config.yaml`.
+- **Fake-IP Whitelist (`local-rules/fakeip-whitelist-ipcidr.txt`)**:
+  - **What goes into the `AUTO` block** — inline `IP-CIDR` rules whose action routes to a proxy or a proxy group (`DIRECT`, `REJECT`, `REJECT-DROP`, and `PASS` are excluded; IPv6 and `SRC-IP-CIDR` are excluded), `IP-CIDR` entries from `rule-providers` referenced by such rules, and `dns.fake-ip-filter` entries. These are real destination IPv4 addresses/subnets: matching DNS queries receive a real IP address instead of a `fake-ip`, while the firewall still routes traffic to those addresses into the Mihomo core.
+  - **Save vs. Regenerate** — clicking **Save** writes the file text as-is and, if the proxy is running, updates the kernel set without rebuilding the `AUTO` block. Rebuilding the `AUTO` block is triggered by the **Regenerate** button, as well as on **Start** and **Apply** when **Auto fake-ip whitelist** is enabled. Manual lines outside the `AUTO` markers are preserved across rebuilds; edits inside the `AUTO` markers last until the next rebuild.
+  - **Progress banner** — while the whitelist is being built or loaded into the kernel, a persistent banner remains under the header warning that a large network list may take several minutes (not a pop-up toast notification). System log lines for this work remain in English.
+
+<details>
+<summary><strong>Screenshot: Rule Lists</strong></summary>
 
 <p align="center">
   <img src=".github/assets/images/screenshots/scr-04.png" alt="Rule Lists" width="800">
 </p>
 
-## Step 8: Real-time log monitoring
+</details>
 
-Monitor activity in **System Log**:
+---
 
-- **Live SSE stream** with automatic updates
-- **Color-coded sources** — `clash` (Mihomo), `gateway` (firewall/routing/DNS), `ssclash` (daemon/UI)
-- Filter by source and search text
-- Auto-scroll to latest entries
+### Built-in Mihomo Dashboard
 
-<p align="center">
-  <img src=".github/assets/images/screenshots/scr-09.png" alt="System Log" width="800">
-</p>
+SSClash includes a native four-tab Mihomo dashboard — **Proxies**, **Connections**, **Rules**, and **Core Logs**:
 
-## Step 9: Mihomo dashboard
+- **Secure API proxying** — the browser communicates only with `/api/mihomo/*` over your authenticated SSClash session; Mihomo's `external-controller` (`:9090`) and `secret` never need to be exposed to the network.
+- **Cross-device preference sync** — UI preferences (sorting, table columns, latency thresholds) are saved in `localStorage` and optionally mirrored to Mihomo's `/storage/ssclash` endpoint when **Auto-sync settings to core** is enabled.
+- **External UI support** — if you configure `external-ui` in `config.yaml` and place a third-party dashboard in `ui/`, clicking **Open dashboard** on the Configuration tab opens it in a new tab.
 
-SSClash includes a built-in dashboard with four tabs — **Proxies**, **Connections**, **Rules**, and **Core Logs** — in the same UI style as the rest of the app. The browser talks to `/api/mihomo/*`; the Mihomo `secret` and external controller stay on the server.
-
-**System Log** (sidebar) is separate: it shows SSClash daemon, firewall, and routing messages. **Core Logs** shows the live Mihomo core log stream.
-
-Dashboard preferences are stored under `config/*` and `cache/*` keys in the browser's `localStorage`, with optional sync to Mihomo via the core `/storage` slot when **Auto-sync settings** is enabled in the Proxies tab settings. This is separate from Mihomo's `cache.db` file (core profile data such as fake-ip mappings).
-
-Optionally, set `external-ui` in `config.yaml` and install a third-party bundle under `ui/`. When `external-ui` is configured, **Open Dashboard** on the Configuration page opens that external UI in a new tab.
+<details>
+<summary><strong>Screenshots: Proxies, Connections, Rules & Core Logs</strong></summary>
 
 <p align="center">
   <img src=".github/assets/images/screenshots/scr-05.png" alt="Proxies" width="800">
@@ -491,66 +540,140 @@ Optionally, set `external-ui` in `config.yaml` and install a third-party bundle 
   <img src=".github/assets/images/screenshots/scr-08.png" alt="Core Logs" width="800">
 </p>
 
-## First run
+</details>
 
-1. Open `http://<host>:9091` (or your `--port` / `--bind` / TLS URL) and set the admin password.
-2. Edit **Configuration** — a sensible default is seeded on first start. Add proxies or a subscription.
-3. Press **Start** in the header.
+---
 
-The installer downloads Mihomo automatically. If it was skipped (`--no-mihomo`) or the download failed, get the kernel from **Settings → Mihomo kernel** before **Start**.
+### System Log
 
-## Environment variables
+The **System Log** tab streams real-time Server-Sent Events (SSE) across all components in one place, color-coded by source:
+- `clash` — Mihomo core startup and runtime output
+- `gateway` — firewall rules, policy routing, DNS interception, and hotplug events
+- `ssclash` — daemon lifecycle and web UI events
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `SSCLASH_ROOT` | `/opt/clash` | Working directory (config, kernel, lists) |
-| `SSCLASH_TMP` | `/tmp/ssclash` | Runtime temp dir (caches, tmpfs symlinks) |
-| `SSCLASH_PLATFORM` | auto | Force `openwrt`, `keenetic`, or `linux` |
-| `SSCLASH_ADDR` | `:9091` | Web UI listen address |
-| `SSCLASH_SECRET` | auto | Session signing secret (persisted otherwise) |
-| `SSCLASH_TLS_CERT` / `SSCLASH_TLS_KEY` | — | Enable HTTPS for the web UI |
-| `SSCLASH_DEBUG` | `0` | `1` — verbose boot diagnostics on stderr; extra gateway warnings. Full iptables counter dump: `ssclash fw diagnose` |
-| `SSCLASH_BRAND` | `SSClash` | Product name in the authenticated UI |
-| `SSCLASH_LOGIN_TITLE` | — | Optional brand on login/setup screens |
+<details>
+<summary><strong>Screenshot: System Log</strong></summary>
 
-## CLI
+<p align="center">
+  <img src=".github/assets/images/screenshots/scr-09.png" alt="System Log" width="800">
+</p>
 
+</details>
+
+---
+
+## Technical Reference
+
+### Directory Layout & Migration
+
+All persistent files reside under `/opt/clash` by default (override with `SSCLASH_ROOT`):
+
+```text
+/opt/clash/
+├── bin/ssclash              # SSClash daemon binary
+├── bin/clash                # Mihomo kernel binary
+├── config.yaml              # Active configuration file
+├── configs/                 # Named configuration profiles
+├── local-rules/             # Local user rule lists (was lst/ in LuCI SSClash)
+├── rule-providers/          # Downloaded rule-provider files (was ruleset/)
+├── proxy-providers/         # Downloaded proxy-provider files (was proxy_providers/)
+├── subscriptions/           # Pasted share-link lists (file providers)
+├── ui/                      # Optional external dashboard files
+├── .ssclash/                # Settings, password hash, session key, doh-custom.txt, UCI backup
+└── (runtime) /tmp/ssclash/  # Ephemeral caches, tmpfs symlinks, resolved IP sets
 ```
-ssclash [serve]              run the daemon + web UI (default)
-ssclash fw start|stop|update apply / remove / refresh firewall + routing
-ssclash fw validate-policy   check policy routing
-ssclash fw repair-policy     repair policy routing
-ssclash fw validate-forward  check forward rules
-ssclash fw repair-forward    repair forward rules
-ssclash fw ndm-reload        restore SSClash jumps after KeeneticOS netfilter rebuild
-ssclash fw sync-killswitch   install or remove the gateway kill switch (exit 10: drop is on)
-ssclash fw diagnose          log intercept wiring, policies, iptables counters (troubleshooting)
-ssclash hotplug wan|tun      run WAN-up or TUN-add handlers (manual / cron)
-ssclash cleanup              remove orphan Mihomo + firewall after unclean stop
-ssclash setpass [password]   set the web admin password
-ssclash version              print version
+
+<details>
+<summary><strong>Migrating from Legacy LuCI SSClash</strong></summary>
+
+SSClash (Go) uses the same `/opt/clash/config.yaml` and `/opt/clash/bin/clash` kernel path as the original LuCI application. If upgrading in place, rename the following paths:
+
+| Legacy LuCI SSClash | SSClash (Go) |
+| :--- | :--- |
+| `lst/` | `local-rules/` |
+| `ruleset/` | `rule-providers/` |
+| `proxy_providers/` | `proxy-providers/` |
+| `settings` (in root) | `.ssclash/settings` |
+| `/tmp/clash/` | `/tmp/ssclash/` |
+
+</details>
+
+---
+
+### Command-Line Interface (CLI)
+
+```text
+ssclash [serve]              Run the daemon and web UI (default)
+ssclash fw start|stop|update Apply, remove, or refresh firewall and policy routing
+ssclash fw validate-policy   Check policy routing rules and tables
+ssclash fw repair-policy     Repair policy routing rules and tables
+ssclash fw validate-forward  Check firewall forwarding rules
+ssclash fw repair-forward    Repair firewall forwarding rules
+ssclash fw ndm-reload        Restore SSClash jumps after KeeneticOS netfilter rebuild
+ssclash fw sync-killswitch   Install or remove the gateway kill switch (exit 10 = drop active)
+ssclash fw diagnose          Dump intercept wiring, policies, and iptables counters
+ssclash hotplug wan|tun      Run WAN-up or TUN-add handlers (manual or cron)
+ssclash cleanup              Clean up orphan Mihomo process and firewall rules after unclean stop
+ssclash setpass [password]   Set or reset the web UI admin password
+ssclash version              Print SSClash version
 ```
 
-## Key constants
+---
 
-These must stay aligned with `config.yaml` (ports, marks, table IDs):
+### Environment Variables
 
-TPROXY port `7894`, HYBRID TCP redirect port `7893` (`redir-port`), DNS `7874`, external-controller `:9090`, fwmarks `0x1`/`0x2`/`0x3` (OpenWrt and Linux), Keenetic fwmarks `0x80000000`/`0x10000000` with mask `0x90000000`, routing tables `100`/`101`, rule prefs `1000`/`1001`, nft table `inet clash`, TUN device `clash-tun`, default fake-ip range `198.18.0.0/15`.
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `SSCLASH_ROOT` | `/opt/clash` | Working directory for configs, kernel, and rule lists. |
+| `SSCLASH_TMP` | `/tmp/ssclash` | Runtime temporary directory for caches and `tmpfs` symlinks. |
+| `SSCLASH_PLATFORM` | `auto` | Force platform detection: `openwrt`, `keenetic`, or `linux`. |
+| `SSCLASH_ADDR` | `:9091` | Web UI listen address (`host:port` or `:port`). |
+| `SSCLASH_SECRET` | `auto` | Session signing secret (generated and persisted automatically if unset). |
+| `SSCLASH_TLS_CERT` / `SSCLASH_TLS_KEY` | — | Paths to PEM certificate and private key to enable HTTPS for the web UI. |
+| `SSCLASH_DEBUG` | `0` | Set to `1` for verbose boot diagnostics on `stderr` and extra gateway warnings. |
+| `SSCLASH_BRAND` | `SSClash` | Custom product name displayed in the authenticated UI. |
+| `SSCLASH_LOGIN_TITLE` | — | Optional custom title on the login and initial password setup screens. |
 
-## Release binaries
+---
 
-Each [GitHub Release](https://github.com/zerolabnet/SSClash-Go/releases) includes:
+### Key Constants & Release Assets
+
+<details>
+<summary><strong>Internal Ports, Marks, Routing Tables & Release Assets</strong></summary>
+
+#### Key Constants (aligned with `config.yaml`)
+
+| Parameter | Value |
+| :--- | :--- |
+| **TPROXY port (`tproxy-port`)** | `7894` |
+| **HYBRID / MIXED2 TCP redirect port (`redir-port`)** | `7893` |
+| **Mihomo DNS listen port (`dns.listen`)** | `7874` (`0.0.0.0:7874`) |
+| **Mihomo API (`external-controller`)** | `:9090` |
+| **Firewall marks (OpenWrt & Linux)** | `0x1` / `0x2` / `0x3` |
+| **Firewall marks (Keenetic)** | `0x80000000` / `0x10000000` (mask `0x90000000`) |
+| **Policy routing tables & rule priorities** | Tables `100` / `101`, priorities `1000` / `1001` |
+| **nftables table / TUN interface** | `inet clash` / `clash-tun` |
+| **Default `fake-ip` range** | `198.18.0.0/15` |
+
+#### GitHub Release Assets
+
+Each [GitHub Release](https://github.com/zerolabnet/SSClash-Go/releases) provides:
 
 | Asset | Description |
-|---|---|
-| `ssclash-linux-amd64`, `ssclash-linux-arm64`, … | Static daemon (16 Linux targets) |
-| `ssclash-openwrt-service.tar.gz` | OpenWrt `init.d` service files |
-| `ssclash-keenetic-service.tar.gz` | Keenetic Entware `S99ssclash` init script |
-| `sha256sums.txt` | SHA-256 checksums |
+| :--- | :--- |
+| `ssclash-linux-amd64`, `ssclash-linux-arm64`, … | Static SSClash binaries for 16 Linux architecture targets |
+| `ssclash-openwrt-service.tar.gz` | OpenWrt `/etc/init.d/ssclash` service archive |
+| `ssclash-keenetic-service.tar.gz` | Keenetic Entware `/opt/etc/init.d/S99ssclash` init script archive |
+| `sha256sums.txt` | SHA-256 checksums for all release assets |
+
+</details>
+
+---
 
 ## Uninstall
 
-Turn **Kill switch** off and click **Save & Apply** before you stop the service, so the drop and the OpenWrt firewall include are removed.
+> [!IMPORTANT]
+> If **Kill switch** is enabled in **Settings → Options**, turn it **off** and click **Save & Apply** before stopping and removing the service so the WAN drop rules and OpenWrt firewall include (`/var/etc/ssclash-ks.include`) are cleanly removed.
 
 **OpenWrt:**
 
@@ -561,16 +684,7 @@ rm -f /etc/init.d/ssclash
 rm -rf /opt/clash
 ```
 
-**Linux (systemd):**
-
-```bash
-sudo systemctl stop ssclash
-sudo systemctl disable ssclash
-sudo rm -f /etc/systemd/system/ssclash.service
-sudo rm -rf /opt/clash
-```
-
-**Keenetic:**
+**Keenetic (Entware):**
 
 ```bash
 /opt/etc/init.d/S99ssclash stop
@@ -579,14 +693,19 @@ rm -f /opt/etc/ndm/netfilter.d/50-ssclash.sh
 rm -rf /opt/clash
 ```
 
-## License
+**Generic Linux (systemd):**
 
-SSClash binaries and install scripts in this repository are distributed under the
-[SSClash Binary Software License](LICENSE) (proprietary).
+```bash
+sudo systemctl stop ssclash
+sudo systemctl disable ssclash
+sudo rm -f /etc/systemd/system/ssclash.service
+sudo systemctl daemon-reload
+sudo rm -rf /opt/clash
+```
 
-The optional **Mihomo** core is a separate third-party component with its own
-license. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+---
 
-## Support
+## License & Support
 
-If SSClash is useful to you, consider [donating](https://zerolab.net/donate/) to support development by [ZeroChaos](https://zerolab.net).
+- **License:** SSClash binaries and installation scripts in this repository are distributed under the proprietary [SSClash Binary Software License](LICENSE). The **Mihomo** kernel is a separate third-party component governed by its own license; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- **Support Development:** If SSClash is useful to you, consider [supporting the project](https://zerolab.net/donate/) by [ZeroChaos](https://zerolab.net).

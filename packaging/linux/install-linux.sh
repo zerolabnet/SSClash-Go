@@ -6,8 +6,17 @@
 # runtime by ssclash when the proxy starts — nothing is written to /etc except
 # the systemd unit.
 #
-# Remote one-liner:
-#   curl -fsSL https://raw.githubusercontent.com/zerolabnet/SSClash-Go/main/packaging/linux/install-linux.sh | sudo sh
+# Remote install. Save the file first. A failed download prints an error:
+#   echo "[ssclash-go] downloading installer..." >&2
+#   if curl -fL --retry 2 --connect-timeout 15 --max-time 120 \
+#     -o /tmp/install-linux.sh \
+#     https://raw.githubusercontent.com/zerolabnet/SSClash-Go/main/packaging/linux/install-linux.sh \
+#     && [ -s /tmp/install-linux.sh ]; then
+#     sudo sh /tmp/install-linux.sh
+#   else
+#     echo "[ssclash-go] ERROR: download failed" >&2
+#     false
+#   fi
 #
 # Offline / local binary:
 #   sudo ./install-linux.sh --from ./dist/ssclash-linux-amd64
