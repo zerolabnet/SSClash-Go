@@ -63,7 +63,7 @@
 
 ### 1. Установка SSClash
 
-Скрипт автоустановки определяет ОС и архитектуру процессора, устанавливает `/opt/clash/bin/ssclash`, скачивает актуальное ядро **Mihomo** (если оно ещё не установлено или вышла более новая версия) и регистрирует системную службу.
+Скрипт автоустановки определяет ОС и архитектуру процессора, устанавливает `/opt/clash/bin/ssclash`, ставит ядро прокси (в терминале спрашивает трек; без TTY — Mihomo Stable) и регистрирует системную службу.
 
 > [!NOTE]
 > Если служба SSClash уже работает, установщик **предварительно останавливает её**, чтобы активный прозрачный прокси не мешал загрузке с GitHub и файлы можно было безопасно заменить.
@@ -107,7 +107,7 @@ curl -fsSL -o /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-G
 3. Нажмите **Запустить** на верхней панели.
 
 > [!TIP]
-> Если вы запускали установку с флагом `--no-mihomo` или скачивание ядра прервалось, перед запуском откройте **Настройки → Ядро Mihomo** и нажмите **Скачать последнее ядро**.
+> Если вы выбрали `--kernel=skip` или скачивание ядра прервалось, перед запуском откройте **Настройки** и скачайте ядро.
 
 ---
 
@@ -159,14 +159,14 @@ curl -fsSL -o /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-G
   ```bash
   wget -O /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh && ash /tmp/install-ssclash-go.sh --bind 192.168.1.1 --port 9091
   ```
-- **Установка без скачивания ядра Mihomo (`--no-mihomo`)**
+- **Установка без скачивания ядра (`--kernel=skip`)**
   Полезно, если вы используете собственную сборку `/opt/clash/bin/clash` или планируете скачать ядро позже через веб-интерфейс:
   ```bash
-  wget -O /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh && ash /tmp/install-ssclash-go.sh --no-mihomo
+  wget -O /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh && ash /tmp/install-ssclash-go.sh --kernel=skip
   ```
-- **Обновление только SSClash без обновления ядра Mihomo (`--update --no-mihomo`)**
+- **Обновление только SSClash без замены текущего ядра (`--update --kernel=skip`)**
   ```bash
-  wget -O /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh && ash /tmp/install-ssclash-go.sh --update --no-mihomo
+  wget -O /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh && ash /tmp/install-ssclash-go.sh --update --kernel=skip
   ```
 
 ### Справочник параметров установщика
@@ -183,8 +183,10 @@ curl -fsSL -o /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-G
 | `--mode gateway\|server` | **Только Linux** — режим работы: `gateway` (прозрачный прокси-шлюз) или `server` (сервер со входящими слушателями `listeners:`). |
 | `--version <tag>` | Скачать конкретный релиз SSClash по тегу (по умолчанию — последний релиз). |
 | `--from <path>` | Установить SSClash из локального исполняемого файла без скачивания с GitHub. |
-| `--no-mihomo` | Не скачивать ядро Mihomo при установке или обновлении. |
-| `--update` | Обновить существующую установку (заменяет только SSClash и ядро Mihomo, сохраняя режим, адрес, TLS и файл службы). Совместим с `--from`, `--version` и `--no-mihomo`. Не сочетается с `--mode`, `--port`, `--bind`, `--addr`, `--root` и `--tls-*`. |
+| `--kernel <id>` | Идентификатор ядра: `mihomo-stable`, `mihomo-alpha`, `prizrak-core`, `prizrak-kroha`, `skip` или `keep`. В терминале без `--kernel` установщик показывает меню. Без терминала ставится `mihomo-stable`, а с `--update` — `keep`. При новой установке без `--tls-*` спрашивает про self-signed HTTPS. |
+| `--update` | Обновить существующую установку (заменяет только SSClash и выбранное ядро, сохраняя режим, адрес, TLS и файл службы). Совместим с `--from`, `--version` и `--kernel`. Не сочетается с `--mode`, `--port`, `--bind`, `--addr`, `--root` и `--tls-*`. В терминале при уже установленной копии без `--update` установщик спрашивает, обновить или поставить заново. Без `--kernel` меню ядра по умолчанию предлагает оставить текущее. |
+
+В терминале установщик печатает баннер, затем меню для уже установленной копии, ядра и порта веб-интерфейса. На Linux дополнительно спрашивает режим gateway или server. Переданный флаг пропускает соответствующий вопрос. Без терминала по умолчанию выполняется новая установка, если не указан `--update`, ядро `mihomo-stable`, режим gateway и порт `9091`.
 
 > [!NOTE]
 > Платформенные скрипты установки с тем же поведением находятся в каталогах `packaging/{openwrt,linux,keenetic}/`.
@@ -246,7 +248,7 @@ curl -fsSL -o /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-G
 2. При необходимости распакуйте новое ядро Mihomo в `/opt/clash/bin/clash` (`gunzip` архива `mihomo-linux-*.gz` и `chmod 755 /opt/clash/bin/clash`).
 3. Запустите обновление (скрипт службы, адрес, TLS и каталог установки сохранятся):
    ```bash
-   sh /tmp/install-openwrt.sh --update --from /tmp/ssclash-linux-arm64 --no-mihomo
+   sh /tmp/install-openwrt.sh --update --from /tmp/ssclash-linux-arm64 --kernel=skip
    ```
 4. Если нужно заменить и сам init-скрипт службы:
    ```bash
@@ -286,11 +288,11 @@ curl -fsSL -o /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-G
    gunzip -c /tmp/mihomo-linux-arm64-<tag>.gz > /opt/clash/bin/clash
    chmod 755 /opt/clash/bin/clash
 
-   sh /tmp/ssclash-offline/install-keenetic.sh --from /tmp/ssclash-offline/ssclash-linux-arm64 --no-mihomo
+   sh /tmp/ssclash-offline/install-keenetic.sh --from /tmp/ssclash-offline/ssclash-linux-arm64 --kernel=skip
    ```
 4. **Офлайн-обновление существующей установки на Keenetic:**
    ```bash
-   sh /tmp/ssclash-offline/install-keenetic.sh --update --from /tmp/ssclash-offline/ssclash-linux-arm64 --no-mihomo
+   sh /tmp/ssclash-offline/install-keenetic.sh --update --from /tmp/ssclash-offline/ssclash-linux-arm64 --kernel=skip
    ```
 
 </details>
@@ -303,11 +305,11 @@ curl -fsSL -o /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-G
 3. Положите распакованное ядро Mihomo в `/opt/clash/bin/clash` (`chmod 755`).
 4. **Чистая офлайн-установка:**
    ```bash
-   sudo sh /tmp/install-linux.sh --from /tmp/ssclash-linux-amd64 --mode gateway --no-mihomo
+   sudo sh /tmp/install-linux.sh --from /tmp/ssclash-linux-amd64 --mode gateway --kernel=skip
    ```
 5. **Офлайн-обновление существующей установки:**
    ```bash
-   sudo sh /tmp/install-linux.sh --update --from /tmp/ssclash-linux-amd64 --no-mihomo
+   sudo sh /tmp/install-linux.sh --update --from /tmp/ssclash-linux-amd64 --kernel=skip
    ```
 
 </details>

@@ -63,7 +63,7 @@ Read this in other languages:
 
 ### 1. Install SSClash
 
-The autoinstaller detects your OS and CPU architecture, installs `/opt/clash/bin/ssclash`, downloads the latest **Mihomo** kernel (if not already present or if a newer release is available), and registers the system service.
+The autoinstaller detects your OS and CPU architecture, installs `/opt/clash/bin/ssclash`, installs a proxy kernel (on a terminal it asks which track; otherwise Mihomo Stable), and registers the system service.
 
 > [!NOTE]
 > If SSClash is already running, the installer **stops the service first** so active transparent-proxy rules do not interrupt GitHub downloads and binaries can be replaced safely.
@@ -107,7 +107,7 @@ curl -fsSL -o /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-G
 3. Click **Start** in the top toolbar.
 
 > [!TIP]
-> If you ran the installer with `--no-mihomo` or the kernel download was interrupted, open **Settings → Mihomo kernel** and click **Download latest kernel** before starting the service.
+> If you chose `--kernel=skip` or the kernel download was interrupted, open **Settings** and download a kernel before starting the service.
 
 ---
 
@@ -159,14 +159,14 @@ Each command below downloads a fresh copy of the installer to `/tmp/install-sscl
   ```bash
   wget -O /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh && ash /tmp/install-ssclash-go.sh --bind 192.168.1.1 --port 9091
   ```
-- **Install SSClash Without Downloading Mihomo (`--no-mihomo`)**
+- **Install SSClash without downloading a kernel (`--kernel=skip`)**
   Useful when you already have a custom `/opt/clash/bin/clash` binary or want to download the kernel later from the Web UI:
   ```bash
-  wget -O /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh && ash /tmp/install-ssclash-go.sh --no-mihomo
+  wget -O /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh && ash /tmp/install-ssclash-go.sh --kernel=skip
   ```
-- **Update Only SSClash and Keep Existing Mihomo Kernel (`--update --no-mihomo`)**
+- **Update only SSClash and keep the current kernel (`--update --kernel=skip`)**
   ```bash
-  wget -O /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh && ash /tmp/install-ssclash-go.sh --update --no-mihomo
+  wget -O /tmp/install-ssclash-go.sh https://github.com/zerolabnet/SSClash-Go/raw/refs/heads/main/install-ssclash-go.sh && ash /tmp/install-ssclash-go.sh --update --kernel=skip
   ```
 
 ### Installer Options Reference
@@ -183,8 +183,10 @@ Each command below downloads a fresh copy of the installer to `/tmp/install-sscl
 | `--mode gateway\|server` | **Linux only** — operating mode: `gateway` (transparent proxy) or `server` (inbound server; seeds a sample `listeners:` block in `config.yaml` on fresh install). |
 | `--version <tag>` | Install a specific SSClash release tag (default: latest release). |
 | `--from <path>` | Install SSClash from a local binary path instead of downloading from GitHub. |
-| `--no-mihomo` | Skip downloading the Mihomo kernel. |
-| `--update` | Upgrade an existing installation (replaces only SSClash and Mihomo; preserves mode, address, TLS, and service file). Can be combined with `--from`, `--version`, and `--no-mihomo`. Do not combine with `--mode`, `--port`, `--bind`, `--addr`, `--root`, or `--tls-*`. |
+| `--kernel <id>` | Kernel id: `mihomo-stable`, `mihomo-alpha`, `prizrak-core`, `prizrak-kroha`, `skip`, or `keep`. On a terminal, the installer shows a menu when you omit `--kernel`. Without a terminal it installs `mihomo-stable`, or `keep` with `--update`. A fresh install also asks about self-signed HTTPS when you omit `--tls-*`. |
+| `--update` | Upgrade an existing installation (replaces only SSClash and the selected kernel; preserves mode, address, TLS, and the service file). Can be combined with `--from`, `--version`, and `--kernel`. Do not combine with `--mode`, `--port`, `--bind`, `--addr`, `--root`, or `--tls-*`. On a terminal, an existing install asks update or reinstall when you omit `--update`. The kernel menu defaults to keep current when you omit `--kernel`. |
+
+On a terminal the installer prints a banner, then menus for an existing install, the kernel, and the web UI port. Linux also asks for gateway or server mode. A flag skips that question. Without a terminal the defaults are a fresh install unless you pass `--update`, kernel `mihomo-stable`, gateway mode, and port `9091`.
 
 > [!NOTE]
 > Platform-specific installer scripts with identical behavior are located in `packaging/{openwrt,linux,keenetic}/`.
@@ -246,7 +248,7 @@ Use the sections below when your router or server cannot reach GitHub or OS pack
 2. Optionally, unpack the new Mihomo binary to `/opt/clash/bin/clash` (`gunzip` the matching `mihomo-linux-*.gz` and run `chmod 755 /opt/clash/bin/clash`).
 3. Run the offline update (preserves the init script, listen address, TLS settings, and install root):
    ```bash
-   sh /tmp/install-openwrt.sh --update --from /tmp/ssclash-linux-arm64 --no-mihomo
+   sh /tmp/install-openwrt.sh --update --from /tmp/ssclash-linux-arm64 --kernel=skip
    ```
 4. To update the init script offline as well:
    ```bash
@@ -286,11 +288,11 @@ Use this procedure when the Keenetic router has no direct access to GitHub or th
    gunzip -c /tmp/mihomo-linux-arm64-<tag>.gz > /opt/clash/bin/clash
    chmod 755 /opt/clash/bin/clash
 
-   sh /tmp/ssclash-offline/install-keenetic.sh --from /tmp/ssclash-offline/ssclash-linux-arm64 --no-mihomo
+   sh /tmp/ssclash-offline/install-keenetic.sh --from /tmp/ssclash-offline/ssclash-linux-arm64 --kernel=skip
    ```
 4. **Offline update of an existing Keenetic installation:**
    ```bash
-   sh /tmp/ssclash-offline/install-keenetic.sh --update --from /tmp/ssclash-offline/ssclash-linux-arm64 --no-mihomo
+   sh /tmp/ssclash-offline/install-keenetic.sh --update --from /tmp/ssclash-offline/ssclash-linux-arm64 --kernel=skip
    ```
 
 </details>
@@ -303,11 +305,11 @@ Use this procedure when the Keenetic router has no direct access to GitHub or th
 3. Place the Mihomo binary at `/opt/clash/bin/clash` (`chmod 755`).
 4. **Fresh offline install:**
    ```bash
-   sudo sh /tmp/install-linux.sh --from /tmp/ssclash-linux-amd64 --mode gateway --no-mihomo
+   sudo sh /tmp/install-linux.sh --from /tmp/ssclash-linux-amd64 --mode gateway --kernel=skip
    ```
 5. **Offline update of an existing installation:**
    ```bash
-   sudo sh /tmp/install-linux.sh --update --from /tmp/ssclash-linux-amd64 --no-mihomo
+   sudo sh /tmp/install-linux.sh --update --from /tmp/ssclash-linux-amd64 --kernel=skip
    ```
 
 </details>

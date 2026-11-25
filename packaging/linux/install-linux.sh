@@ -30,10 +30,22 @@
 #                                    with an inbound listeners: example when
 #                                    that file is still missing.
 #   --from <path>   Install this local binary instead of downloading.
-#   --no-mihomo     Skip Mihomo kernel download (install later from Settings).
-#   --update        Update the ssclash binary and Mihomo only. Keeps the
+#   --kernel <id>   Kernel id: mihomo-stable, mihomo-alpha, prizrak-core,
+#                   prizrak-kroha, skip, or keep. On a terminal, a menu is
+#                   shown when --kernel is omitted. Without a terminal the
+#                   default is mihomo-stable, or keep with --update.
+#   --update        Update the ssclash binary and kernel only. Keeps the
 #                   existing mode, listen address, TLS and service file.
-#   Mihomo is installed only when the release is newer than the kernel on disk.
+#                   On a terminal with an existing install, the installer asks
+#                   update or reinstall when --update is omitted. The kernel
+#                   menu then defaults to keep current.
+#   A kernel on disk is kept when it matches the selected track. A different
+#   track is installed even when the x.y.z version looks the same.
+#   On a terminal the installer prints a banner, then menus for an existing
+#   install, the kernel, gateway or server mode, the web UI port, and optional
+#   self-signed HTTPS. Flags skip the matching question. Without a terminal
+#   the defaults are a fresh install unless --update, kernel mihomo-stable
+#   (or keep with --update), gateway, port 9091, and HTTP.
 #   --version <tag> Download a specific release tag (default: latest).
 #   --port <n>      Web UI port (default 9091; all interfaces)
 #   --bind <ip>     Bind web UI to this IP (with --port, default 9091)
@@ -45,7 +57,9 @@
 set -eu
 
 REPO="zerolabnet/SSClash-Go"
-MIHOMO_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
+MIHOMO_STABLE_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
+MIHOMO_ALPHA_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/tags/Prerelease-Alpha"
+PRIZRAK_API="https://api.github.com/repos/legiz-ru/Prizrak-Core/releases/latest"
 ROOT=/opt/clash
 DEST="$ROOT/bin/ssclash"
 CLASH_BIN="$ROOT/bin/clash"
@@ -56,7 +70,7 @@ UI_PORT=9091
 FROM=""
 VERSION="latest"
 MODE=""
-SKIP_MIHOMO=0
+KERNEL_TRACK=""
 UPDATE=0
 MIHOMO_INSTALLED=0
 MIHOMO_STATUS="skipped"
@@ -70,24 +84,18 @@ err() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo ">> $*"; }
 warn() { echo "WARNING: $*" >&2; }
 
-# Fail when Mihomo was expected but no runnable kernel exists. --no-mihomo is OK;
-# upgrade keeps exit 0 if an existing kernel at $CLASH_BIN still runs.
+# Fail when a kernel was expected but no runnable kernel exists. skip is OK.
+# An upgrade still exits 0 when an existing kernel at $CLASH_BIN runs.
 assert_mihomo_ready() {
 	case "$MIHOMO_STATUS" in
 	installed*|skipped*|kept*) return 0 ;;
 	esac
 	if [ -x "$CLASH_BIN" ] && "$CLASH_BIN" -v >/dev/null 2>&1; then
-		warn "Mihomo update failed ($MIHOMO_STATUS) — keeping existing kernel at $CLASH_BIN"
+		warn "Kernel update failed ($MIHOMO_STATUS) — keeping existing kernel at $CLASH_BIN"
 		MIHOMO_STATUS="kept existing ($MIHOMO_STATUS)"
 		return 0
 	fi
-	err "Mihomo kernel install failed ($MIHOMO_STATUS). Fix network/GitHub access and re-run, pass --no-mihomo to skip, or install the kernel from Settings → Mihomo kernel after SSClash is up."
-}
-
-# mihomo_installed_version prints vX.Y.Z from the kernel already on disk.
-mihomo_installed_version() {
-	[ -x "$CLASH_BIN" ] || return 0
-	"$CLASH_BIN" -v 2>/dev/null | sed -n 's/.*\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1
+	err "Kernel install failed ($MIHOMO_STATUS). Fix network/GitHub access and re-run, pass --kernel=skip, or install the kernel from Settings after SSClash is up."
 }
 
 # version_gt is true when $1 is a strictly newer vX.Y.Z than $2.
@@ -105,6 +113,165 @@ version_gt() {
 	if [ "$_ai" -lt "$_bi" ]; then return 1; fi
 	[ "$_ap" -gt "$_bp" ]
 }
+
+# KERNEL-SELECT-BEGIN
+# normalize_kernel_track prints a canonical KERNEL_TRACK, or returns 1.
+normalize_kernel_track() {
+	case "$1" in
+		mihomo-stable|mihomo-alpha|prizrak-core|prizrak-kroha|skip|keep)
+			printf '%s\n' "$1"
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+# kernel_token_from_text reads a kernel -v blob. Revision and alpha win over x.y.z.
+kernel_token_from_text() {
+	_text=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+	_p=$(printf '%s\n' "$_text" | sed -n 's/.*\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*-r[0-9][0-9]*\(-kroha\)\{0,1\}\).*/\1/p' | head -n 1)
+	if [ -n "$_p" ]; then
+		printf '%s\n' "$_p"
+		return 0
+	fi
+	_a=$(printf '%s\n' "$_text" | sed -n 's/.*alpha[-_ ]\{0,1\}\([0-9a-f]\{7,\}\).*/\1/p' | head -n 1)
+	if [ -n "$_a" ]; then
+		printf 'alpha-%s\n' "$_a"
+		return 0
+	fi
+	_v=$(printf '%s\n' "$_text" | sed -n 's/.*\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1)
+	[ -n "$_v" ] && printf '%s\n' "$_v"
+}
+
+kernel_token_track() {
+	case "$1" in
+		*-kroha) printf '%s\n' prizrak-kroha ;;
+		alpha-*) printf '%s\n' mihomo-alpha ;;
+		v*-r[0-9]*) printf '%s\n' prizrak-core ;;
+		v*) printf '%s\n' mihomo-stable ;;
+		*) return 1 ;;
+	esac
+}
+
+# kernel_should_keep is true when the on-disk token can stay for this track.
+# $1 installed token (may be empty), $2 release token, $3 KERNEL_TRACK.
+kernel_should_keep() {
+	_have=$1
+	_rel=$2
+	_track=$3
+	[ -n "$_have" ] || return 1
+	_have_track=$(kernel_token_track "$_have") || return 1
+	[ "$_have_track" = "$_track" ] || return 1
+	[ "$_have" = "$_rel" ] && return 0
+	if [ "$_track" = mihomo-stable ]; then
+		version_gt "$_rel" "$_have" && return 1
+		return 0
+	fi
+	return 1
+}
+
+# kernel_release_token prints the keep-token for a track. $1 track, $2 tag, $3 json.
+kernel_release_token() {
+	_track=$1
+	_tag=$2
+	_json=$3
+	case "$_track" in
+		mihomo-stable)
+			printf '%s\n' "$_tag"
+			;;
+		prizrak-core)
+			printf '%s\n' "$_tag" | grep -q '^v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*-r[0-9][0-9]*$' || return 1
+			printf '%s\n' "$_tag"
+			;;
+		prizrak-kroha)
+			printf '%s\n' "$_tag" | grep -q '^v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*-r[0-9][0-9]*$' || return 1
+			printf '%s-kroha\n' "$_tag"
+			;;
+		mihomo-alpha)
+			_h=$(printf '%s\n' "$_json" | tr '[:upper:]' '[:lower:]' | sed -n 's/.*-alpha-\([0-9a-f]\{7,\}\)\.gz.*/\1/p' | head -n 1)
+			if [ -n "$_h" ]; then
+				printf 'alpha-%s\n' "$_h"
+			else
+				printf '%s\n' Prerelease-Alpha
+			fi
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+# select_kernel_track sets KERNEL_TRACK. A /dev/tty menu runs only when it is empty.
+select_kernel_track() {
+	if [ -n "${KERNEL_TRACK:-}" ]; then
+		return 0
+	fi
+	if ! ( : <>/dev/tty ) >/dev/null 2>&1; then
+		if [ "${UPDATE:-0}" = 1 ]; then
+			KERNEL_TRACK=keep
+		else
+			KERNEL_TRACK=mihomo-stable
+		fi
+		return 0
+	fi
+	if [ "${UPDATE:-0}" = 1 ]; then
+		{
+			printf '%s\n' \
+				'Choose a kernel:' \
+				'  1) keep current' \
+				'  2) mihomo-stable' \
+				'  3) mihomo-alpha' \
+				'  4) prizrak-core' \
+				'  5) prizrak-kroha' \
+				'  6) skip (install later from Settings)'
+			while :; do
+				printf 'Select [1]: '
+				if ! IFS= read -r _choice; then
+					printf '\n%s\n' 'No selection. Using 1) keep current.'
+					KERNEL_TRACK=keep
+					return 0
+				fi
+				case "$_choice" in
+					''|1) KERNEL_TRACK=keep; return 0 ;;
+					2) KERNEL_TRACK=mihomo-stable; return 0 ;;
+					3) KERNEL_TRACK=mihomo-alpha; return 0 ;;
+					4) KERNEL_TRACK=prizrak-core; return 0 ;;
+					5) KERNEL_TRACK=prizrak-kroha; return 0 ;;
+					6) KERNEL_TRACK=skip; return 0 ;;
+					*) printf '%s\n' 'Invalid choice. Enter 1, 2, 3, 4, 5, or 6.' ;;
+				esac
+			done
+		} </dev/tty >/dev/tty
+		return 0
+	fi
+	{
+		printf '%s\n' \
+			'Choose a kernel:' \
+			'  1) mihomo-stable' \
+			'  2) mihomo-alpha' \
+			'  3) prizrak-core' \
+			'  4) prizrak-kroha' \
+			'  5) skip (install later from Settings)'
+		while :; do
+			printf 'Select [1]: '
+			if ! IFS= read -r _choice; then
+				printf '\n%s\n' 'No selection. Using 1) mihomo-stable.'
+				KERNEL_TRACK=mihomo-stable
+				return 0
+			fi
+			case "$_choice" in
+				''|1) KERNEL_TRACK=mihomo-stable; return 0 ;;
+				2) KERNEL_TRACK=mihomo-alpha; return 0 ;;
+				3) KERNEL_TRACK=prizrak-core; return 0 ;;
+				4) KERNEL_TRACK=prizrak-kroha; return 0 ;;
+				5) KERNEL_TRACK=skip; return 0 ;;
+				*) printf '%s\n' 'Invalid choice. Enter 1, 2, 3, 4, or 5.' ;;
+			esac
+		done
+	} </dev/tty >/dev/tty
+}
+# KERNEL-SELECT-END
 
 install_file() {
 	_src="$1"
@@ -439,7 +606,19 @@ while [ $# -gt 0 ]; do
 		--mode=*) MODE="${1#*=}"; shift ;;
 		--from) FROM="${2:-}"; shift 2 ;;
 		--from=*) FROM="${1#*=}"; shift ;;
-		--no-mihomo) SKIP_MIHOMO=1; shift ;;
+				--kernel)
+			[ -n "${2:-}" ] || err "--kernel requires an id (mihomo-stable, mihomo-alpha, prizrak-core, prizrak-kroha, skip, keep)"
+			KERNEL_TRACK=$(normalize_kernel_track "$2") \
+				|| err "unknown --kernel: $2 (mihomo-stable, mihomo-alpha, prizrak-core, prizrak-kroha, skip, keep)"
+			shift 2
+			;;
+		--kernel=*)
+			_karg=${1#*=}
+			[ -n "$_karg" ] || err "--kernel requires an id (mihomo-stable, mihomo-alpha, prizrak-core, prizrak-kroha, skip, keep)"
+			KERNEL_TRACK=$(normalize_kernel_track "$_karg") \
+				|| err "unknown --kernel: $_karg (mihomo-stable, mihomo-alpha, prizrak-core, prizrak-kroha, skip, keep)"
+			shift
+			;;
 		--update) UPDATE=1; shift ;;
 		--version) VERSION="${2:-}"; shift 2 ;;
 		--version=*) VERSION="${1#*=}"; shift ;;
@@ -455,7 +634,7 @@ while [ $# -gt 0 ]; do
 		--tls-key=*) TLS_KEY="${1#*=}"; shift ;;
 		--tls-self-signed) TLS_SELF_SIGNED=1; shift ;;
 		-h|--help)
-			sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
+			awk 'NR>1 && /^set -e/{exit} NR>1 {sub(/^# ?/,""); print}' "$0"
 			exit 0 ;;
 		*) echo "Unknown option: $1" >&2; exit 1 ;;
 	esac
@@ -505,21 +684,352 @@ ui_scheme() {
 	if [ -n "$TLS_CERT" ]; then echo https; else echo http; fi
 }
 
-# pick_lan_ipv4 prefers RFC1918 from global addresses (avoids public WAN in hints).
+# iface_skipped is true for container, tunnel, and other non-LAN interfaces.
+iface_skipped() {
+	case "$1" in
+		''|lo|lo[0-9]*|docker*|veth*|virbr*|cni*|flannel*|kube*|nerdctl*|podman*|zt*|tun*|wg*|tailscale*)
+			return 0
+			;;
+		br-lan|br0)
+			return 1
+			;;
+		br-*)
+			return 0
+			;;
+	esac
+	return 1
+}
+
+# iface_lan is true for names that usually hold a LAN address.
+iface_lan() {
+	case "$1" in
+		br-lan|lan|br0|eth*|en*|wlan*|wlp*|wl*)
+			return 0
+			;;
+	esac
+	return 1
+}
+
+# ipv4_docker17 is true for Docker's default bridge, 172.17.0.0/16.
+ipv4_docker17() {
+	case "$1" in
+		172.17.*) return 0 ;;
+	esac
+	return 1
+}
+
+# ipv4_rfc1918 is true for private IPv4 except 172.17.0.0/16.
+ipv4_rfc1918() {
+	case "$1" in
+		10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*)
+			if ipv4_docker17 "$1"; then
+				return 1
+			fi
+			return 0
+			;;
+	esac
+	return 1
+}
+
+# pick_lan_ipv4 prints one IPv4 for the UI hint.
+# A private route-get src wins, so Docker 172.17.0.1 loses to a real LAN route.
+# A private address on a LAN-like iface beats a public WAN src.
+# Virtual ifaces are skipped. 172.17.0.0/16 is only a last resort.
 pick_lan_ipv4() {
-	_first=""
-	for _ip in $(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1); do
-		[ -z "$_ip" ] && continue
-		[ -z "$_first" ] && _first="$_ip"
-		case "$_ip" in
-			10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*)
-				echo "$_ip"
-				return 0
+	_route_src=""
+	for _via in 1.1.1.1 8.8.8.8; do
+		_line=$(ip -4 route get "$_via" 2>/dev/null | head -n 1 || true)
+		[ -n "$_line" ] || continue
+		_src=$(printf '%s\n' "$_line" | sed -n 's/.* src[[:space:]][[:space:]]*\([0-9.][0-9.]*\).*/\1/p' | head -n 1)
+		_dev=$(printf '%s\n' "$_line" | sed -n 's/.* dev[[:space:]][[:space:]]*\([^ ][^ ]*\).*/\1/p' | head -n 1)
+		[ -n "$_src" ] || continue
+		if iface_skipped "$_dev"; then
+			continue
+		fi
+		if ipv4_docker17 "$_src"; then
+			continue
+		fi
+		_route_src=$_src
+		break
+	done
+
+	_lan_rfc=""
+	_any_rfc=""
+	_lan_glob=""
+	_any_glob=""
+	_last=""
+	_addrs=$(ip -4 -o addr show scope global 2>/dev/null | awk '{ printf "%s=%s\n", $2, $4 }' || true)
+	for _pair in $_addrs; do
+		_if=${_pair%%=*}
+		_cidr=${_pair#*=}
+		_ip=${_cidr%%/*}
+		[ -n "$_ip" ] || continue
+		if iface_skipped "$_if"; then
+			continue
+		fi
+		if [ -z "$_last" ]; then
+			_last=$_ip
+		fi
+		if ipv4_docker17 "$_ip"; then
+			continue
+		fi
+		if [ -z "$_any_glob" ]; then
+			_any_glob=$_ip
+		fi
+		if iface_lan "$_if" && [ -z "$_lan_glob" ]; then
+			_lan_glob=$_ip
+		fi
+		if ipv4_rfc1918 "$_ip"; then
+			if [ -z "$_any_rfc" ]; then
+				_any_rfc=$_ip
+			fi
+			if iface_lan "$_if" && [ -z "$_lan_rfc" ]; then
+				_lan_rfc=$_ip
+			fi
+		fi
+	done
+
+	if [ -n "$_route_src" ] && ipv4_rfc1918 "$_route_src"; then
+		printf '%s\n' "$_route_src"
+		return 0
+	fi
+	if [ -n "$_lan_rfc" ]; then
+		printf '%s\n' "$_lan_rfc"
+		return 0
+	fi
+	if [ -n "$_route_src" ]; then
+		printf '%s\n' "$_route_src"
+		return 0
+	fi
+	if [ -n "$_any_rfc" ]; then
+		printf '%s\n' "$_any_rfc"
+		return 0
+	fi
+	if [ -n "$_lan_glob" ]; then
+		printf '%s\n' "$_lan_glob"
+		return 0
+	fi
+	if [ -n "$_any_glob" ]; then
+		printf '%s\n' "$_any_glob"
+		return 0
+	fi
+	if [ -n "$_last" ]; then
+		printf '%s\n' "$_last"
+	fi
+}
+
+# reconfigure_requested is true when flags already choose a fresh install.
+reconfigure_requested() {
+	if [ -n "$MODE$UI_BIND$UI_ADDR$TLS_CERT$TLS_KEY" ]; then
+		return 0
+	fi
+	if [ "$TLS_SELF_SIGNED" = 1 ]; then
+		return 0
+	fi
+	if [ "$UI_PORT" != 9091 ]; then
+		return 0
+	fi
+	return 1
+}
+
+print_banner() {
+	cat <<'EOF'
+================================================
+  SSClash-Go
+  by ZeroChaos
+  https://zerolab.net
+================================================
+EOF
+}
+
+# tty_ok is true when /dev/tty can take prompts, including curl|sh.
+tty_ok() {
+	( : <>/dev/tty ) >/dev/null 2>&1
+}
+
+# prompt_install_action may set UPDATE.
+# $1 is 1 when a binary or service file already exists.
+# $2 is 1 when that install is complete enough to update.
+prompt_install_action() {
+	if [ "$UPDATE" = 1 ]; then
+		return 0
+	fi
+	if reconfigure_requested; then
+		return 0
+	fi
+	if [ "${1:-0}" != 1 ]; then
+		return 0
+	fi
+	if ! tty_ok; then
+		return 0
+	fi
+	_def=2
+	if [ "${2:-0}" = 1 ]; then
+		_def=1
+	fi
+	{
+		printf '%s\n' \
+			'An existing installation was found.' \
+			'  1) Update (binary and kernel only; keep mode, address, TLS, and service)' \
+			'  2) Fresh install / reinstall'
+		while :; do
+			printf 'Select [%s]: ' "$_def"
+			if ! IFS= read -r _choice; then
+				printf '\n'
+				_choice=$_def
+			fi
+			case "$_choice" in
+				'') _choice=$_def ;;
+			esac
+			case "$_choice" in
+				1) UPDATE=1; return 0 ;;
+				2) UPDATE=0; return 0 ;;
+				*) printf '%s\n' 'Invalid choice. Enter 1 or 2.' ;;
+			esac
+		done
+	} </dev/tty >/dev/tty
+}
+
+# prompt_ui_port asks only on a fresh install when the port is still 9091.
+prompt_ui_port() {
+	if [ "$UPDATE" = 1 ]; then
+		return 0
+	fi
+	if [ "$UI_PORT" != 9091 ]; then
+		return 0
+	fi
+	if [ -n "$UI_BIND$UI_ADDR" ]; then
+		return 0
+	fi
+	if ! tty_ok; then
+		return 0
+	fi
+	while :; do
+		printf 'Web UI port [9091]: ' >/dev/tty
+		if ! IFS= read -r _choice </dev/tty; then
+			return 0
+		fi
+		if [ -z "$_choice" ]; then
+			return 0
+		fi
+		case "$_choice" in
+			*[!0-9]*)
+				printf '%s\n' 'Enter a port from 1 to 65535.' >/dev/tty
+				continue
 				;;
 		esac
+		if [ "${#_choice}" -gt 5 ]; then
+			printf '%s\n' 'Enter a port from 1 to 65535.' >/dev/tty
+			continue
+		fi
+		_n=$_choice
+		while :; do
+			case "$_n" in
+				0*) _n=${_n#0} ;;
+				*) break ;;
+			esac
+		done
+		if [ -n "$_n" ] && [ "$_n" -ge 1 ] && [ "$_n" -le 65535 ]; then
+			UI_PORT=$_n
+			return 0
+		fi
+		printf '%s\n' 'Enter a port from 1 to 65535.' >/dev/tty
 	done
-	[ -n "$_first" ] && echo "$_first"
 }
+
+# prompt_tls_self_signed asks only on a fresh install with no TLS flags.
+prompt_tls_self_signed() {
+	if [ "$UPDATE" = 1 ]; then
+		return 0
+	fi
+	if [ "$TLS_SELF_SIGNED" = 1 ]; then
+		return 0
+	fi
+	if [ -n "$TLS_CERT$TLS_KEY" ]; then
+		return 0
+	fi
+	if ! tty_ok; then
+		return 0
+	fi
+	{
+		printf '%s\n' \
+			'Web UI HTTPS (self-signed certificate)?' \
+			'  1) No (HTTP)' \
+			'  2) Yes'
+		while :; do
+			printf 'Select [1]: '
+			if ! IFS= read -r _choice; then
+				printf '\n'
+				return 0
+			fi
+			case "$_choice" in
+				''|1) return 0 ;;
+				2) TLS_SELF_SIGNED=1; return 0 ;;
+				*) printf '%s\n' 'Invalid choice. Enter 1 or 2.' ;;
+			esac
+		done
+	} </dev/tty >/dev/tty
+}
+
+# kernel_summary_text is "skip", "keep (token)", or "id (token)".
+kernel_summary_text() {
+	if [ "$KERNEL_TRACK" = skip ]; then
+		printf '%s\n' skip
+		return 0
+	fi
+	_tok=""
+	if [ -x "$CLASH_BIN" ]; then
+		_tok=$(kernel_token_from_text "$("$CLASH_BIN" -v 2>/dev/null || true)" || true)
+	fi
+	if [ "$KERNEL_TRACK" = keep ]; then
+		if [ -n "$_tok" ]; then
+			printf 'keep (%s)\n' "$_tok"
+		else
+			printf '%s\n' keep
+		fi
+		return 0
+	fi
+	if [ -n "$_tok" ]; then
+		printf '%s (%s)\n' "$KERNEL_TRACK" "$_tok"
+		return 0
+	fi
+	printf '%s (not installed)\n' "$KERNEL_TRACK"
+}
+
+# print_install_summary "$ip" ["$mode"] ["$hint"]
+print_install_summary() {
+	_ip=$1
+	_mode=${2:-}
+	_hint=${3:-}
+	if [ "$UPDATE" = 1 ]; then
+		_word=updated
+	else
+		_word=installed
+	fi
+	_scheme=$(ui_scheme)
+	_host=$(ui_effective_host "$_ip")
+	_port=$(ui_effective_port)
+	_kern=$(kernel_summary_text)
+	printf '\n%s\n' '------------------------------------------------'
+	printf ' SSClash-Go %s\n' "$_word"
+	printf '\n'
+	printf ' UI:     %s\n' "${_scheme}://${_host}:${_port}"
+	printf ' Kernel: %s\n' "$_kern"
+	if [ -n "$_mode" ]; then
+		printf ' Mode:   %s\n' "$_mode"
+	fi
+	printf ' Root:   %s\n' "$ROOT"
+	printf '\n'
+	printf '%s\n' ' Open the UI, set the admin password, then Start.'
+	if [ "$KERNEL_TRACK" = skip ]; then
+		printf '%s\n' ' Install a kernel from Settings before Start.'
+	fi
+	if [ -n "$_hint" ]; then
+		printf ' %s\n' "$_hint"
+	fi
+	printf '%s\n' '------------------------------------------------'
+}
+
 
 ui_effective_port() {
 	if [ -n "$UI_ADDR" ]; then
@@ -550,20 +1060,41 @@ ui_effective_host() {
 	fi
 }
 
-validate_ui_port
+print_banner
+
+if [ "$UI_PORT" != 9091 ]; then
+	validate_ui_port
+fi
+
+[ "$(id -u)" = "0" ] || err "Run as root (sudo)."
+command -v systemctl >/dev/null 2>&1 || err "systemd (systemctl) is required."
+
+if [ -n "$MODE" ]; then
+	case "$MODE" in
+		gateway|server) ;;
+		*) err "Invalid --mode '$MODE' (use gateway or server)." ;;
+	esac
+fi
+
+_present=0
+_healthy=0
+if [ -e "$DEST" ] || [ -f "$UNIT" ]; then
+	_present=1
+fi
+if [ -x "$DEST" ] && [ -f "$UNIT" ]; then
+	_healthy=1
+fi
+prompt_install_action "$_present" "$_healthy"
+
 if [ "$UPDATE" = 1 ]; then
 	if [ -n "$MODE$UI_BIND$UI_ADDR$TLS_CERT$TLS_KEY" ] || [ "$TLS_SELF_SIGNED" = 1 ] || [ "$UI_PORT" != "9091" ]; then
 		err "--update keeps mode, address and TLS; do not pass --mode, --port, --bind, --addr or --tls-*"
 	fi
 	[ -x "$DEST" ] || err "--update: $DEST is missing; run a normal install"
 	[ -f "$UNIT" ] || err "--update: $UNIT is missing; run a normal install"
-else
-	finalize_ui_addr
-	prepare_tls_certs
 fi
 
-[ "$(id -u)" = "0" ] || err "Run as root (sudo)."
-command -v systemctl >/dev/null 2>&1 || err "systemd (systemctl) is required."
+select_kernel_track
 
 # Captured before any download: a failed GitHub request stops the service.
 WAS_ACTIVE=0
@@ -578,8 +1109,20 @@ if [ "$UPDATE" = 1 ]; then
 	info "Update: keeping install settings (mode: $MODE)"
 else
 	if [ -z "$MODE" ]; then
-		printf "Install mode:\n  [1] Gateway (transparent proxy: firewall, routing, DNS)\n  [2] Server  (Mihomo only, inbound listeners:)\nChoose [1/2] (default 1): "
-		read -r m </dev/tty 2>/dev/null || m=""
+		if tty_ok; then
+			{
+				printf '%s\n' \
+					'Install mode:' \
+					'  [1] Gateway (transparent proxy: firewall, routing, DNS)' \
+					'  [2] Server  (Mihomo only, inbound listeners:)'
+				printf 'Choose [1/2] (default 1): '
+				if ! IFS= read -r m; then
+					m=""
+				fi
+			} </dev/tty >/dev/tty
+		else
+			m=""
+		fi
 		case "$m" in
 			2|server) MODE="server" ;;
 			*) MODE="gateway" ;;
@@ -590,6 +1133,11 @@ else
 		*) err "Invalid --mode '$MODE' (use gateway or server)." ;;
 	esac
 	info "Install mode: $MODE"
+	prompt_ui_port
+	prompt_tls_self_signed
+	validate_ui_port
+	finalize_ui_addr
+	prepare_tls_certs
 fi
 
 # Gateway uses conntrack to drop stale DNS/DoT sessions and ipset for DoH and port filters.
@@ -631,7 +1179,7 @@ map_arch() {
 }
 
 MIHOMO_ARCH="$(map_arch "$(uname -m)")"
-[ -n "$MIHOMO_ARCH" ] && info "Mihomo kernel: mihomo-linux-${MIHOMO_ARCH}"
+[ -n "$MIHOMO_ARCH" ] && info "kernel arch: ${MIHOMO_ARCH}"
 
 has_cpu_flag() {
 	case " $1 " in
@@ -640,10 +1188,12 @@ has_cpu_flag() {
 	return 1
 }
 
-# The unsuffixed mihomo-linux-amd64 file is an x86-64-v3 build.
+# The unsuffixed linux-amd64 file is an x86-64-v3 build.
+# $3 is the filename prefix (default mihomo).
 amd64_mihomo_names() {
 	_ver=$1
 	_flags=$2
+	_prefix=${3:-mihomo}
 	_v2=1
 	for _f in cx16 lahf_lm popcnt pni sse4_1 sse4_2 ssse3; do
 		has_cpu_flag "$_flags" "$_f" || _v2=0
@@ -656,101 +1206,271 @@ amd64_mihomo_names() {
 		done
 	fi
 	if [ "$_v3" = 1 ]; then
-		echo "mihomo-linux-amd64-v3-${_ver}.gz mihomo-linux-amd64-v2-${_ver}.gz mihomo-linux-amd64-v1-${_ver}.gz mihomo-linux-amd64-compatible-${_ver}.gz mihomo-linux-amd64-${_ver}.gz"
+		echo "${_prefix}-linux-amd64-v3-${_ver}.gz ${_prefix}-linux-amd64-v2-${_ver}.gz ${_prefix}-linux-amd64-v1-${_ver}.gz ${_prefix}-linux-amd64-compatible-${_ver}.gz ${_prefix}-linux-amd64-${_ver}.gz"
 		return 0
 	fi
 	if [ "$_v2" = 1 ]; then
-		echo "mihomo-linux-amd64-v2-${_ver}.gz mihomo-linux-amd64-v1-${_ver}.gz mihomo-linux-amd64-compatible-${_ver}.gz mihomo-linux-amd64-${_ver}.gz"
+		echo "${_prefix}-linux-amd64-v2-${_ver}.gz ${_prefix}-linux-amd64-v1-${_ver}.gz ${_prefix}-linux-amd64-compatible-${_ver}.gz ${_prefix}-linux-amd64-${_ver}.gz"
 		return 0
 	fi
-	echo "mihomo-linux-amd64-v1-${_ver}.gz mihomo-linux-amd64-compatible-${_ver}.gz mihomo-linux-amd64-${_ver}.gz"
+	echo "${_prefix}-linux-amd64-v1-${_ver}.gz ${_prefix}-linux-amd64-compatible-${_ver}.gz ${_prefix}-linux-amd64-${_ver}.gz"
 }
 
-mihomo_asset_url() {
-	_ver="$1"
-	_arch="$2"
+# KERNEL-ASSET-BEGIN
+# kernel_json_urls prints one browser_download_url per line.
+kernel_json_urls() {
+	printf '%s\n' "$MIHOMO_JSON" | sed 's/"browser_download_url"/\
+"browser_download_url"/g' \
+		| sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
+}
+
+# json_asset_url prints the URL whose basename is $1.
+json_asset_url() {
+	_name=$1
+	_url=$(kernel_json_urls | while IFS= read -r _u; do
+		_base=${_u##*/}
+		if [ "$_base" = "$_name" ]; then
+			printf '%s\n' "$_u"
+			break
+		fi
+	done)
+	[ -n "$_url" ] || return 1
+	printf '%s\n' "$_url"
+}
+
+# kernel_compressed_name is the -compressed- twin of a plain .gz name.
+kernel_compressed_name() {
+	_name=$1
+	_tag=$2
+	_suffix="-${_tag}.gz"
+	case "$_name" in
+		*"$_suffix")
+			_stem=${_name%"$_suffix"}
+			printf '%s\n' "${_stem}-compressed-${_tag}.gz"
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+# kernel_gzip_url prefix tag arch leveled compressed
+# leveled=1 uses the amd64 v3/v2/v1/compatible ladder. compressed=1 tries the twin.
+kernel_gzip_url() {
+	_prefix=$1
+	_ver=$2
+	_arch=$3
+	_leveled=$4
+	_compressed=$5
 	_candidates=""
 	case "$_arch" in
 		loong64)
-			_candidates="mihomo-linux-loong64-abi2-${_ver}.gz mihomo-linux-loong64-abi1-${_ver}.gz"
+			_candidates="${_prefix}-linux-loong64-abi2-${_ver}.gz ${_prefix}-linux-loong64-abi1-${_ver}.gz"
 			;;
 		amd64)
-			_flags=$(awk '/^flags/ { sub(/^flags[^:]*:[[:space:]]*/, ""); print; exit }' /proc/cpuinfo 2>/dev/null || true)
-			_candidates=$(amd64_mihomo_names "$_ver" "$_flags")
+			if [ "$_leveled" = 1 ]; then
+				_flags=$(awk '/^flags/ { sub(/^flags[^:]*:[[:space:]]*/, ""); print; exit }' /proc/cpuinfo 2>/dev/null || true)
+				_candidates=$(amd64_mihomo_names "$_ver" "$_flags" "$_prefix")
+			else
+				_candidates="${_prefix}-linux-amd64-${_ver}.gz"
+			fi
 			;;
 		*)
-			_candidates="mihomo-linux-${_arch}-${_ver}.gz"
+			_candidates="${_prefix}-linux-${_arch}-${_ver}.gz"
 			;;
 	esac
 	for _name in $_candidates; do
-		_url=$(printf '%s' "$MIHOMO_JSON" \
-			| grep '"browser_download_url"' \
-			| grep "/${_name}\"" | head -1 \
-			| sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+		if _url=$(json_asset_url "$_name"); then
+			printf '%s\n' "$_url"
+			return 0
+		fi
+		if [ "$_compressed" = 1 ]; then
+			_alt=$(kernel_compressed_name "$_name" "$_ver") || continue
+			if _url=$(json_asset_url "$_alt"); then
+				printf '%s\n' "$_url"
+				return 0
+			fi
+		fi
+	done
+	return 1
+}
+
+kernel_alpha_prefixes() {
+	_arch=$1
+	case "$_arch" in
+		loong64)
+			printf '%s\n' "mihomo-linux-loong64-abi2-alpha- mihomo-linux-loong64-abi1-alpha-"
+			;;
+		amd64)
+			_flags=$(awk '/^flags/ { sub(/^flags[^:]*:[[:space:]]*/, ""); print; exit }' /proc/cpuinfo 2>/dev/null || true)
+			_names=$(amd64_mihomo_names HASHPLACE "$_flags" mihomo)
+			_out=""
+			for _n in $_names; do
+				_n=${_n%.gz}
+				_n=${_n%-HASHPLACE}
+				_out="${_out}${_n}-alpha- "
+			done
+			printf '%s\n' "$_out"
+			;;
+		*)
+			printf '%s\n' "mihomo-linux-${_arch}-alpha-"
+			;;
+	esac
+}
+
+# kernel_alpha_match reads URLs on stdin and prints the first hash asset for prefix $1.
+# The match stays outside $(...) so a case ")" does not close the substitution.
+kernel_alpha_match() {
+	_prefix=$1
+	while IFS= read -r _u; do
+		_base=${_u##*/}
+		case "$_base" in
+			"${_prefix}"*.gz) ;;
+			*) continue ;;
+		esac
+		_mid=${_base#"$_prefix"}
+		_mid=${_mid%.gz}
+		case "$_mid" in
+			''|*[!0-9a-fA-F]*) continue ;;
+		esac
+		if [ "${#_mid}" -ge 7 ]; then
+			printf '%s\n' "$_u"
+			break
+		fi
+	done
+}
+
+# kernel_alpha_url picks mihomo-linux-<arch>-alpha-<hash>.gz, amd64 ladder first.
+kernel_alpha_url() {
+	_arch=$1
+	_prefixes=$(kernel_alpha_prefixes "$_arch")
+	for _prefix in $_prefixes; do
+		_url=$(kernel_json_urls | kernel_alpha_match "$_prefix")
 		if [ -n "$_url" ]; then
-			echo "$_url"
+			printf '%s\n' "$_url"
 			return 0
 		fi
 	done
 	return 1
 }
 
+# fetch_kernel_asset fills MIHOMO_JSON, MIHOMO_VER, and MIHOMO_URL.
+# Returns 1 when the caller should stop (kept, or a soft failure already recorded).
+fetch_kernel_asset() {
+	case "$KERNEL_TRACK" in
+		mihomo-stable) _api=$MIHOMO_STABLE_API; _label="Mihomo Stable" ;;
+		mihomo-alpha) _api=$MIHOMO_ALPHA_API; _label="Mihomo Alpha" ;;
+		prizrak-core) _api=$PRIZRAK_API; _label="Prizrak Core" ;;
+		prizrak-kroha) _api=$PRIZRAK_API; _label="Prizrak Kroha" ;;
+		*)
+			warn "unknown kernel track ${KERNEL_TRACK}"
+			MIHOMO_STATUS="missing (bad track)"
+			return 1
+			;;
+	esac
+	info "Fetching ${_label} release..."
+	MIHOMO_JSON=$(github_get "$_api") || {
+		warn "${_label} GitHub API request failed — install from Settings later"
+		MIHOMO_STATUS="missing (API failed)"
+		return 1
+	}
+	[ -n "$MIHOMO_JSON" ] || {
+		warn "empty ${_label} API response — install from Settings later"
+		MIHOMO_STATUS="missing (empty API)"
+		return 1
+	}
+	MIHOMO_VER=$(printf '%s\n' "$MIHOMO_JSON" \
+		| grep '"tag_name"' | head -n 1 \
+		| sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+	if [ -z "$MIHOMO_VER" ]; then
+		warn "could not parse ${_label} version — install from Settings later"
+		MIHOMO_STATUS="missing (parse failed)"
+		return 1
+	fi
+	_token=$(kernel_release_token "$KERNEL_TRACK" "$MIHOMO_VER" "$MIHOMO_JSON") || {
+		warn "unexpected ${_label} release tag ${MIHOMO_VER} — install from Settings later"
+		MIHOMO_STATUS="missing (parse failed)"
+		return 1
+	}
+	info "${_label}: ${_token}"
+	_have=""
+	if [ -x "$CLASH_BIN" ]; then
+		_have=$(kernel_token_from_text "$("$CLASH_BIN" -v 2>/dev/null || true)")
+	fi
+	if kernel_should_keep "$_have" "$_token" "$KERNEL_TRACK"; then
+		info "${_label} ${_have} is already current for ${_token} — keeping it"
+		MIHOMO_STATUS="kept (${_have})"
+		return 1
+	fi
+	if [ -n "$_have" ]; then
+		info "${_label} ${_have} differs from ${_token} — installing"
+	fi
+	MIHOMO_URL=""
+	case "$KERNEL_TRACK" in
+		mihomo-stable)
+			MIHOMO_URL=$(kernel_gzip_url mihomo "$MIHOMO_VER" "$MIHOMO_ARCH" 1 0) || MIHOMO_URL=""
+			;;
+		prizrak-core)
+			MIHOMO_URL=$(kernel_gzip_url prizrak-core "$MIHOMO_VER" "$MIHOMO_ARCH" 1 0) || MIHOMO_URL=""
+			;;
+		prizrak-kroha)
+			MIHOMO_URL=$(kernel_gzip_url prizrak-kroha "$MIHOMO_VER" "$MIHOMO_ARCH" 0 1) || MIHOMO_URL=""
+			;;
+		mihomo-alpha)
+			MIHOMO_URL=$(kernel_alpha_url "$MIHOMO_ARCH") || MIHOMO_URL=""
+			;;
+	esac
+	if [ -z "$MIHOMO_URL" ]; then
+		warn "${_label} asset for ${MIHOMO_ARCH} not found — install from Settings later"
+		MIHOMO_STATUS="missing (no asset for ${MIHOMO_ARCH})"
+		return 1
+	fi
+	return 0
+}
+# KERNEL-ASSET-END
+
 install_mihomo() {
-	if [ "$SKIP_MIHOMO" = "1" ]; then
-		warn "skipping Mihomo download (--no-mihomo)"
-		MIHOMO_STATUS="skipped (--no-mihomo)"
+	select_kernel_track
+	if [ "$KERNEL_TRACK" = "skip" ]; then
+		warn "skipping kernel download (skip)"
+		MIHOMO_STATUS="skipped (skip)"
+		return 0
+	fi
+	if [ "$KERNEL_TRACK" = "keep" ]; then
+		if [ -x "$CLASH_BIN" ] && "$CLASH_BIN" -v >/dev/null 2>&1; then
+			_tok=$(kernel_token_from_text "$("$CLASH_BIN" -v 2>/dev/null || true)" || true)
+			if [ -n "$_tok" ]; then
+				MIHOMO_STATUS="kept (current: ${_tok})"
+			else
+				MIHOMO_STATUS="kept (current)"
+			fi
+			info "keeping current kernel (${_tok:-ok})"
+		else
+			warn "keep requested but no runnable kernel at $CLASH_BIN"
+			MIHOMO_STATUS="missing (keep: no kernel)"
+		fi
 		return 0
 	fi
 	if [ -z "$MIHOMO_ARCH" ]; then
-		warn "Mihomo architecture unknown — install from Settings later"
+		warn "kernel architecture unknown — install from Settings later"
 		MIHOMO_STATUS="missing (unknown arch)"
 		return 0
 	fi
 	command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || {
-		warn "curl/wget not found — install Mihomo from Settings later"
+		warn "curl/wget not found — install the kernel from Settings later"
 		MIHOMO_STATUS="missing (no curl/wget)"
 		return 0
 	}
 	command -v gunzip >/dev/null 2>&1 || command -v gzip >/dev/null 2>&1 || {
-		warn "gunzip/gzip not found — install Mihomo from Settings later"
+		warn "gunzip/gzip not found — install the kernel from Settings later"
 		MIHOMO_STATUS="missing (no gunzip)"
 		return 0
 	}
 
-	info "Fetching latest Mihomo release..."
-	MIHOMO_JSON=$(github_get "$MIHOMO_API") || {
-		warn "Mihomo GitHub API request failed — install from Settings later"
-		MIHOMO_STATUS="missing (API failed)"
-		return 0
-	}
-	MIHOMO_VER=$(printf '%s' "$MIHOMO_JSON" \
-		| grep '"tag_name"' | head -1 \
-		| sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-	if [ -z "$MIHOMO_VER" ]; then
-		warn "could not parse Mihomo version — install from Settings later"
-		MIHOMO_STATUS="missing (parse failed)"
-		return 0
-	fi
-	info "Mihomo: ${MIHOMO_VER}"
-	_have="$(mihomo_installed_version)"
-	if [ -n "$_have" ]; then
-		if version_gt "$MIHOMO_VER" "$_have"; then
-			info "Mihomo ${_have} is older than ${MIHOMO_VER} — updating"
-		else
-			info "Mihomo ${_have} is already current (release ${MIHOMO_VER}) — keeping it"
-			MIHOMO_STATUS="kept (${_have})"
-			return 0
-		fi
-	fi
-
-	MIHOMO_URL=$(mihomo_asset_url "$MIHOMO_VER" "$MIHOMO_ARCH") || {
-		warn "Mihomo asset for ${MIHOMO_ARCH} not found — install from Settings later"
-		MIHOMO_STATUS="missing (no asset for ${MIHOMO_ARCH})"
-		return 0
-	}
+	fetch_kernel_asset || return 0
 
 	_tmp_gz="$(mktemp)"
-	info "Downloading Mihomo kernel..."
+	info "Downloading ${KERNEL_TRACK} kernel..."
 	if ! GITHUB_GET_MAX_TIME=300 github_get "$MIHOMO_URL" "$_tmp_gz"; then
 		warn "Mihomo download failed — install from Settings later"
 		rm -f "$_tmp_gz"
@@ -894,7 +1614,7 @@ install_mihomo() {
 	rm -f /opt/clash/bin/meta-backup 2>/dev/null || true
 
 	MIHOMO_V=$("$CLASH_BIN" -v 2>/dev/null || true)
-	info "Mihomo installed: ${MIHOMO_V:-ok}"
+	info "Kernel installed (${KERNEL_TRACK}): ${MIHOMO_V:-ok}"
 	MIHOMO_INSTALLED=1
 	MIHOMO_STATUS="installed (${MIHOMO_V:-$MIHOMO_VER})"
 }
@@ -1020,66 +1740,6 @@ EOF
 	systemctl restart ssclash.service
 fi
 
-LAN_IP="$(pick_lan_ipv4)"
+LAN_IP="$(pick_lan_ipv4 || true)"
 [ -n "$LAN_IP" ] || LAN_IP="<lan-ip>"
-UI_HOST=$(ui_effective_host "$LAN_IP")
-UI_P=$(ui_effective_port)
-SCHEME=$(ui_scheme)
-if [ "$UPDATE" = 1 ]; then
-	_done="updated"
-else
-	_done="installed"
-fi
-
-cat <<EOF
-
-==========================================================================
- SSClash-Go $_done ($MODE mode) — everything under $ROOT.
-
- Summary:
-   ssclash:  $DEST (${VERSION:-installed})
-   Mihomo:   ${MIHOMO_STATUS}
-
- 1. Open the web UI:   ${SCHEME}://${UI_HOST}:${UI_P}
-    (set the admin password on first visit)
-EOF
-case "$MIHOMO_STATUS" in
-	installed*|kept*)
-		cat <<EOF
- 2. Settings -> edit config.yaml, then Start.
-EOF
-		;;
-	skipped*)
-		cat <<EOF
- 2. Settings -> download the Mihomo kernel, edit config.yaml, then Start.
-EOF
-		;;
-esac
-if [ "$MODE" = "gateway" ]; then
-	cat <<EOF
-
- Gateway: transparent proxy for LAN clients. Enable "NAT masquerade on WAN"
- in Settings if this host is their default gateway. IP forwarding and kernel
- modules are applied when you Start the proxy (nothing written to /etc).
-
- Point clients' gateway AND DNS at this host ($LAN_IP), or hand that out via
- your own DHCP server — SSClash does not configure DHCP/DNS.
-EOF
-else
-	cat <<EOF
-
- Server: Mihomo runs as a proxy server (no firewall/routing/DNS from SSClash).
- A fresh install seeds config.yaml with an inbound listeners: example; an
- existing file is kept. Replace the marked placeholders and open those ports
- in the host firewall.
-EOF
-fi
-cat <<EOF
-
- Security: the UI listens on :9091 on all interfaces by default. Bind
- it to the admin network only with SSCLASH_ADDR in $UNIT if needed.
-
- Re-run installer with --port / --bind / --tls-self-signed to set listen
- address and HTTPS at install time, or edit $UNIT manually.
-==========================================================================
-EOF
+print_install_summary "$LAN_IP" "$MODE"
