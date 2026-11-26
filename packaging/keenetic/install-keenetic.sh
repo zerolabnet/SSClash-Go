@@ -1937,6 +1937,13 @@ if [ "$UPDATE" = 1 ]; then
 	[ -n "$_kept_cert" ] && TLS_CERT="$_kept_cert"
 	if [ "$WAS_RUNNING" = 1 ]; then
 		start_service
+	elif [ -f "$ROOT/.ssclash/enabled" ]; then
+		# The daemon's own auto-start flag ($ROOT/.ssclash/enabled, written on
+		# Start, cleared only by an explicit Stop): the proxy should be running,
+		# so bring the service back even though it was down during the update,
+		# for example left stopped by a failed self-update on 7.7.x.
+		info "proxy auto-start flag present — starting service after update"
+		start_service
 	else
 		say "service was not running — binary updated, service left stopped"
 	fi

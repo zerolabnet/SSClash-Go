@@ -1926,6 +1926,13 @@ if [ "$UPDATE" = 1 ]; then
 	if [ "$WAS_RUNNING" = "1" ]; then
 		/etc/init.d/ssclash start >/dev/null 2>&1 \
 			|| warn "service start skipped — open the web UI and press Start"
+	elif [ -f "$ROOT/.ssclash/enabled" ]; then
+		# The daemon's own auto-start flag ($ROOT/.ssclash/enabled, written on
+		# Start, cleared only by an explicit Stop): the proxy should be running,
+		# so bring the service back even though it was down during the update.
+		info "proxy auto-start flag present — starting service after update"
+		/etc/init.d/ssclash start >/dev/null 2>&1 \
+			|| warn "service start skipped — open the web UI and press Start"
 	else
 		say "service was not running — binary updated, service left stopped"
 	fi
