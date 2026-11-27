@@ -44,8 +44,11 @@ _wait_ssclash() {
 	done
 }
 
-stop() {
-	procd_kill "${basescript:-$initscript}" "$1"
+# rc.common owns stop() in a USE_PROCD script: it calls procd_kill and then
+# service_stopped, so a stop() defined here would never run. procd only
+# signals the daemon, so what a daemon killed mid-shutdown left behind is
+# removed here.
+service_stopped() {
 	_wait_ssclash
 	"$PROG" cleanup 2>/dev/null || true
 }
