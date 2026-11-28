@@ -531,7 +531,7 @@ On Smart-capable cores (the **Prizrak-Core** channel, or any kernel with Smart g
 - **Smart statistics strip** — a bar above the group list shows every Smart group with per-node weight, current latency and usage rank; clicking a node pins it, the pin button in the strip returns the group to auto selection.
 - **Weight badges** — node cards inside Smart groups show the learned weight (0–100, colored by rank); hovering a node shows its usage rank, hovering the badge explains the number.
 - **No duplicated servers in `include-all` groups** — when a Smart group is a member of an `include-all` group, its servers are listed only inside the Smart group itself.
-- **Selection chain** — every group header shows the current selection chain (with a 🔒 marker for pinned Smart groups); clicking a chain element opens the chain dialog where you can browse the chain and pin nodes.
+- **Selection chain** — every group header shows the current selection chain (pinned Smart groups are marked); clicking a chain element opens the chain dialog where you can browse the chain and pin nodes.
 - **Clear smart weights** — one click resets the learned statistics (visible only when a Smart group exists).
 - **Live latency testing** — the group delay chip doubles as the test button: clicking it runs per-node tests with a live progress toast showing how many nodes are still alive.
 - **Sort smart groups by usage frequency** — optional ordering that follows the kernel's learned weights (Proxies settings).
