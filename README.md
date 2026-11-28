@@ -36,6 +36,7 @@ Read this in other languages:
   - [Configuration, Profiles, Subscriptions & Listeners](#configuration-profiles-subscriptions--listeners)
   - [Rule Lists & Fake-IP Whitelist](#rule-lists--fake-ip-whitelist)
   - [Built-in Mihomo Dashboard](#built-in-mihomo-dashboard)
+  - [Smart Groups (Smart-Core kernels)](#smart-groups-smart-core-kernels)
   - [System Log](#system-log)
 - [Technical Reference](#technical-reference)
   - [Directory Layout & Migration](#directory-layout--migration)
@@ -50,7 +51,7 @@ Read this in other languages:
 ## Highlights
 
 - **Single static binary for every architecture** — pre-built binaries for `amd64`, `arm64`, `armv5`/`v6`/`v7`, `386`, `loong64`, `riscv64`, `ppc64le`, `s390x`, and `mips`/`mipsle` (hardfloat and softfloat). The web UI is embedded directly into the daemon.
-- **Full-featured web UI (English & Russian)** — **Configuration** editor, **Settings**, **Rule Lists**, built-in **Proxies / Connections / Rules / Core Logs** dashboard, and live **System Log**.
+- **Full-featured web UI (English & Russian)** — **Configuration** editor, **Settings**, **Rule Lists**, built-in **Proxies / Connections / Rules / Core Logs** dashboard with full **Smart group** tooling on Smart-capable cores, and live **System Log**.
 - **Managed Mihomo core** — automatic architecture detection, one-click download and updates from GitHub Releases (**Stable** and **Alpha** channels), pre-flight `clash -t` config validation, service control, and hot reload via the Mihomo API.
 - **Native firewall & routing engine** — atomic `nft -f -` ruleset (`table inet clash`) or `iptables`/`ipset` backend; **TPROXY**, **HYBRID**, **TUN**, **MIXED**, and **MIXED2** capture modes; **Explicit** and **Exclude** interface modes; Keenetic access-policy integration; QUIC and DoT/DoH blocking; port filter; per-client bypass; reserved networks; DSCP bypass and force-proxy marks; optional router self-traffic proxying; forwarded IPv6 drop; and a gateway kill switch.
 - **Policy routing** — managed `ip rule` / `ip route` rules (routing tables `100`/`101`; fwmarks `0x1`/`0x2`/`0x3` on OpenWrt and Linux, or `0x80000000`/`0x10000000` with mask `0x90000000` on Keenetic).
@@ -522,6 +523,18 @@ SSClash includes a native four-tab Mihomo dashboard — **Proxies**, **Connectio
 - **Secure API proxying** — the browser communicates only with `/api/mihomo/*` over your authenticated SSClash session; Mihomo's `external-controller` (`:9090`) and `secret` never need to be exposed to the network.
 - **Cross-device preference sync** — UI preferences (sorting, table columns, latency thresholds) are saved in `localStorage` and optionally mirrored to Mihomo's `/storage/ssclash` endpoint when **Auto-sync settings to core** is enabled.
 - **External UI support** — if you configure `external-ui` in `config.yaml` and place a third-party dashboard in `ui/`, clicking **Open dashboard** on the Configuration tab opens it in a new tab.
+
+#### Smart Groups (Smart-Core kernels)
+
+On Smart-capable cores (the **Prizrak-Core** channel, or any kernel with Smart group support) the Proxies tab gets full Smart group tooling. On cores without it (Mihomo **Stable**/**Alpha**) these elements are simply hidden:
+
+- **Smart statistics strip** — a bar above the group list shows every Smart group with per-node weight, current latency and usage rank; clicking a node pins it, the pin button in the strip returns the group to auto selection.
+- **Weight badges** — node cards inside Smart groups show the learned weight (0–100, colored by rank); hovering a node shows its usage rank, hovering the badge explains the number.
+- **No duplicated servers in `include-all` groups** — when a Smart group is a member of an `include-all` group, its servers are listed only inside the Smart group itself.
+- **Selection chain** — every group header shows the current selection chain (with a 🔒 marker for pinned Smart groups); clicking a chain element opens the chain dialog where you can browse the chain and pin nodes.
+- **Clear smart weights** — one click resets the learned statistics (visible only when a Smart group exists).
+- **Live latency testing** — the group delay chip doubles as the test button: clicking it runs per-node tests with a live progress toast showing how many nodes are still alive.
+- **Sort smart groups by usage frequency** — optional ordering that follows the kernel's learned weights (Proxies settings).
 
 <details>
 <summary><strong>Screenshots: Proxies, Connections, Rules & Core Logs</strong></summary>
